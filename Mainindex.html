@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+<?!= HtmlService.createHtmlOutputFromFile('MainStyle').getContent(); ?>
+</head>
+<body>
+
+<div id="app-container">
+  <!-- Landing Page -->
+  <div id="landing-page" class="landing-container">
+    <div class="welcome-section">
+      <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/43/Cognizant_logo_2022.svg/768px-Cognizant_logo_2022.svg.png" alt="Cognizant Logo" class="welcome-logo">
+      <h1 class="welcome-title"><span style="color: #3498db; font-weight: 800;">Meeting</span><span style="color: #2c3e50;">Summary</span></h1>
+      <p class="welcome-subtitle">Email Summary Tool</p>
+      <div id="user-greeting" class="user-greeting">Loading...</div>
+    </div>
+    
+    <div class="app-selection">
+      <h2>Choose Your Application</h2>
+      <div class="app-buttons">
+        <button class="app-button admin-button" onclick="selectApp('admin')">
+          <h3>Admin Panel</h3>
+          <p>Create feedback summaries to share with admins</p>
+        </button>
+        <button class="app-button support-button" onclick="selectApp('support')">
+          <h3>Support Team</h3>
+          <p>Generate comprehensive meeting summaries from client meetings to share with stakeholder management and support team</p>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Application Container -->
+  <div id="main-app" style="display: none;">
+  <header class="app-header">
+    <div class="title-group">
+      <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/43/Cognizant_logo_2022.svg/768px-Cognizant_logo_2022.svg.png" alt="Cognizant Logo">
+      <h1>Meeting<span style="color: #3498db; font-weight: 700;">Summary</span></h1>
+    </div>
+    <div class="header-info">
+      <div id="autosave-indicator" style="font-size: 12px; color: #5f6368; display: none;">
+        <span style="color: #34a853;">✓</span> <span id="autosave-text">Saved</span>
+      </div>
+      <div class="local-time" id="local-time">Loading time...</div>
+      <span class="version-tag">v2.5</span>
+    </div>
+  </header>
+  
+  <nav class="nav-tabs">
+    <button class="nav-tab active" onclick="showSection('admin-section')">Admins</button>
+    <button class="nav-tab" onclick="showSection('support-section')">Support Team</button>
+  </nav>
+
+  <!-- Admin Section -->
+  <div id="admin-section" class="section">
+    <div class="container">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h2 style="margin: 0;"><span style="color: #3498db; font-weight: 600;">Admin</span> Meeting Summary</h2>
+        <div style="display: flex; gap: 10px;">
+          <button id="admin-mmi-config-btn" onclick="openClarificationSheetManager()" style="background-color: #34a853; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; display: none;">📋 MMI Grey Area Calibration Trix</button>
+          <button id="admin-top-history-btn" onclick="openAdminHistoryPage()" style="background-color: #0066cc; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">📋 View History</button>
+        </div>
+      </div>
+      <div id="admin-loader"><p>Loading configuration...</p></div>
+      <div id="admin-app-content" style="display:none;">
+        <div id="admin-initial-selection-steps">
+          <div class="form-step"><label for="admin-workflow-selector"><strong>Step 1:</strong> Select Feedback Type</label><select id="admin-workflow-selector" onchange="onAdminWorkflowSelect()"><option value="">-- Select --</option></select></div>
+          <div id="admin-calendar-section" class="form-step" style="display:none;"><label for="admin-event-date-picker"><strong>Step 2:</strong> Select Meeting Date & Event</label><input type="date" id="admin-event-date-picker" onchange="loadAdminEvents()"><div id="admin-meetings-list" style="margin-top:15px;"></div></div>
+        </div>
+        <div id="admin-selection-summary" style="display:none;">
+          <div><span><strong>Feedback:</strong> <span id="admin-summary-workflow"></span></span><br><span><strong>Meeting:</strong> <span id="admin-summary-event"></span></span></div>
+          <button class="small-btn" onclick="changeAdminSelection()">Change</button>
+        </div>
+        <div id="admin-main-form" style="display:none;">
+          <div id="admin-form-container"></div>
+          <div class="action-buttons">
+            <button id="admin-preview-btn" onclick="generateAdminPreview()">Generate Preview</button>
+            <button id="admin-test-email-btn" onclick="openTestEmailModal()" style="background-color: #f9ab00;">📧 Test Email</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Support Section -->
+  <div id="support-section" class="section" style="display:none;">
+    <div class="container">
+      <h2><span style="color: #3498db; font-weight: 600;">Support Team</span> Meeting Summary</h2>
+      <div class="date-selector">
+        <label for="support-event-date-picker" style="margin: 0;">Select Date:</label>
+        <input type="date" id="support-event-date-picker" onchange="loadSupportEventsForDate()">
+        <button onclick="loadSupportEventsForDate()" style="margin: 0; padding: 8px 16px; background-color: #3498db;">Load Events</button>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <div id="support-meetings-list"><p>Loading meetings...</p></div>
+        <div class="button-group">
+          <button id="manage-pems-btn" onclick="openPemManager()" style="background-color: var(--dark-gray); margin-top:0;">Manage PEMs</button>
+          <button id="manage-recipients-btn" onclick="openRecipientManager()" style="background-color: var(--dark-gray); margin-top:0;">Manage PoCs</button>
+          <button id="manage-row-links-btn" onclick="openRowLinkManager()" style="background-color: #1a73e8; margin-top:0; display: none;">📋 MMI Clarification Sheet</button>
+          <button id="support-main-history-btn" onclick="openSupportHistoryPage()" style="background-color: #0066cc; margin-top:0;">📋 View History</button>
+        </div>
+      </div>
+      <div id="support-form-container" style="display:none">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+          <h3 id="support-form-header" style="margin: 0;"></h3>
+          <button onclick="returnToSupportMeetingList()" style="background-color: var(--dark-gray); margin: 0;">Change Event</button>
+        </div>
+        <input type="hidden" id="support-event-id-input">
+        
+        <div class="form-section workflow-selector">
+          <label style="margin-top:0;">Workflow & Vertical (Auto-detected)</label>
+          <div style="display: flex; gap: 10px; margin-top: 5px;">
+            <select id="support-workflow-select" style="width: 30%;" onchange="toggleMMIConfigButton()">
+              <option value="">Select Workflow</option>
+              <option value="MMI">MMI</option>
+              <option value="GMI">GMI</option>
+              <option value="SA">SA</option>
+            </select>
+            <select id="support-vertical-select" style="width: 70%;" onchange="updateSupportOpsLeadsContext()">
+              <option value="">Select Vertical</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-section"><label>Recipients</label>
+          <div class="recipient-group"><strong>To:</strong><div class="option-item" style="margin-top:5px;"><input type="checkbox" id="support-recipient-pocs" checked><label for="support-recipient-pocs">PoCs (for selected workflow/vertical)</label></div></div>
+          <div class="recipient-group"><strong>CC (Optional):</strong>
+            <div class="option-item" style="margin-top:5px;"><input type="checkbox" id="support-recipient-managers"><label for="support-recipient-managers">Include Managers</label></div>
+            <div class="option-item" style="margin-top:5px;"><input type="checkbox" id="support-recipient-opsleads"><label for="support-recipient-opsleads">Include Ops Leads <span id="support-opsleads-context" style="color: #5f6368; font-size: 12px;"></span></label></div>
+          </div>
+        </div>
+        <div class="form-section"><label>Call conducted by (PEMs):</label><div id="support-pem-checkbox-container"></div></div>
+        <div class="form-section"><label for="support-gemini-summary">What was discussed?</label><textarea id="support-gemini-summary" placeholder="[Briefly summarize the main points discussed] * [Add any general outcomes or decisions made] - Gemini"></textarea></div>
+        <div class="form-section"><label>Key Cases Discussed</label><div id="support-key-cases-container"></div><button type="button" onclick="addSupportCaseRow()" style="background-color: #34a853; font-size: 14px; padding: 8px 12px;">+ Add Case</button></div>
+        <div class="form-section"><label for="support-concerning-issues">Concerning Issues / Comments</label><textarea id="support-concerning-issues" placeholder="[List any specific problems, challenges identified during the discussion]"></textarea></div>
+        <div class="form-section"><label>Follow-up Required?</label>
+          <div class="option-group">
+            <div class="option-item"><input type="radio" id="support-follow-up-yes" name="support-follow-up" value="Yes"><label for="support-follow-up-yes">Yes</label></div>
+            <div class="option-item"><input type="radio" id="support-follow-up-no" name="support-follow-up" value="No" checked><label for="support-follow-up-no">No</label></div>
+          </div>
+          <div id="support-follow-up-details" style="display:none; margin-top: 10px;"><label style="margin-top:0; color:#3c4043; font-weight:bold;">Reason to follow up:</label><textarea id="support-follow-up-context" placeholder='[If Yes, explain why follow-up is needed, e.g., "To track/ clarify progress on action items.ex 1, 2, 3 etc"]'></textarea></div>
+        </div>
+        <div class="action-buttons" style="margin-top: 25px;">
+          <button id="support-preview-btn" onclick="generateSupportPreview()">Generate Preview</button>
+          <button id="support-test-email-btn" onclick="openSupportTestEmailModal()" style="background-color: #f9ab00;">📧 Test Email</button>
+        </div>
+      </div>
+      <div id="support-preview-container" style="display:none">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+          <h3 style="margin: 0;">Email Preview</h3>
+          <button id="split-screen-toggle-btn" onclick="toggleSplitScreenMode()" style="background-color: #1a73e8; color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">📝 Show Form</button>
+        </div>
+        <iframe id="support-email-preview" style="width:100%; min-height: 500px; border:1px solid #ccc;"></iframe>
+        <div id="support-preview-actions" class="button-group" style="margin-top:10px;">
+          <button id="support-edit-btn" onclick="goBackToSupportEdit()" style="background-color: var(--dark-gray);">Back to Edit</button>
+          <button id="support-send-btn" onclick="sendSupportEmail()">Send Email</button>
+          <button id="support-history-btn" onclick="openSupportHistoryPage()" style="background-color: #0066cc;">📋 View History</button>
+          <button id="support-clear-btn" onclick="clearSupportFormAndReturn()" style="background-color: #c53929;">Clear Form & Start New</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modals for Support -->
+  <div id="support-pem-manager-modal" class="modal"><div class="modal-content"><span class="close" onclick="closeModal('support-pem-manager-modal')">&times;</span><h3>Manage PEMs</h3>
+    <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #3498db;">
+      <h4 style="margin-top: 0; color: #2c3e50;">Instructions:</h4>
+      <ul style="margin: 0; padding-left: 20px; color: #555;">
+        <li><strong>To Edit:</strong> Click on any PEM's name or details to modify them</li>
+        <li><strong>To Remove:</strong> Click the X next to a PEM to delete them</li>
+        <li><strong>To Add:</strong> Fill in the fields below and click "Add"</li>
+        <li><strong>Workflows:</strong> Enter workflow codes separated by commas (e.g., GMI,SA)</li>
+        <li><strong>Save:</strong> Click "Save Changes to Sheet" when finished</li>
+      </ul>
+    </div>
+    <div id="support-pem-list-editor"></div><hr><h4>Add New PEM</h4><div class="recipient-editor-row"> <input type="text" id="support-new-pem-ldap" placeholder="LDAP"><input type="text" id="support-new-pem-name" placeholder="Full Name"><input type="text" id="support-new-pem-workflow" placeholder="Workflows (e.g., GMI,SA)"><button onclick="addSupportPemToList()">Add</button></div><hr><button onclick="saveSupportPems()" style="background-color: #34a853;">Save Changes to Sheet</button></div></div>
+
+  <div id="support-recipient-manager-modal" class="modal">
+    <div class="modal-content">
+      <span class="close" onclick="closeModal('support-recipient-manager-modal')">&times;</span>
+      <h3>Manage PoCs & Managers</h3>
+      
+      <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #3498db;">
+        <h4 style="margin-top: 0; color: #2c3e50;">Instructions:</h4>
+        <ul style="margin: 0; padding-left: 20px; color: #555;">
+          <li><strong>To Edit:</strong> Click on any recipient's email or details to modify them</li>
+          <li><strong>To Remove:</strong> Click the X next to a recipient to delete them</li>
+          <li><strong>To Add:</strong> Fill in the fields in each section below and click "Add"</li>
+          <li><strong>PoCs:</strong> Point of Contacts - specify workflows and verticals they handle</li>
+          <li><strong>Managers:</strong> CC recipients who receive all notifications</li>
+          <li><strong>Workflows/Verticals:</strong> Enter codes separated by commas (e.g., GMI,SA for workflows)</li>
+          <li><strong>Save:</strong> Click "Save All Recipients" when finished with all changes</li>
+        </ul>
+      </div>
+
+      <div class="recipient-section">
+        <h4>PoCs (To:)</h4>
+        <div id="support-poc-list-editor">
+        </div>
+        <hr>
+        <h5>Add New PoC</h5>
+        <div class="recipient-editor-row">
+          <input type="email" id="support-new-poc-email" placeholder="Email">
+          <input type="text" id="support-new-poc-workflow" placeholder="Workflows (e.g., GMI,SA)">
+          <input type="text" id="support-new-poc-vertical" placeholder="Verticals (e.g., SSL,CNI)">
+          <button onclick="addSupportPocToList()">Add</button>
+        </div>
+      </div>
+
+      <div class="recipient-section" style="margin-top: 30px;">
+        <h4>Managers (CC:)</h4>
+        <div id="support-manager-list-editor">
+        </div>
+        <hr>
+        <h5>Add New Manager</h5>
+        <div class="recipient-editor-row manager-row">
+          <input type="email" id="support-new-manager-email" placeholder="Email">
+          <button onclick="addSupportManagerToList()">Add</button>
+        </div>
+      </div>
+      
+      <hr style="margin-top: 30px;">
+      <button onclick="saveSupportRecipients()" style="background-color: #34a853;">Save All Recipients</button>
+    </div>
+  </div>
+
+    <div id="support-email-preview-modal" class="modal"><div class="modal-content" style="max-width: 800px;"><span class="close" onclick="closeModal('support-email-preview-modal')">&times;</span><h3>Sent Email Preview</h3><iframe id="support-history-email-preview" style="width:100%; height: 60vh; border: 1px solid #ccc;"></iframe></div></div>
+
+  <!-- Support Row Link Base URL Configuration Modal -->
+  <div id="support-row-link-config-modal" class="modal">
+    <div class="modal-content" style="max-width: 700px;">
+      <span class="close" onclick="closeModal('support-row-link-config-modal')">&times;</span>
+      <h3 style="margin-top: 0; color: #202124; border-bottom: 2px solid #1a73e8; padding-bottom: 10px;">
+        <span style="font-size: 20px;">📋</span> MMI Clarification Sheet Configuration
+      </h3>
+      
+      <div style="background-color: #e8f4f8; padding: 15px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #1a73e8;">
+        <p style="margin: 0 0 10px 0; font-size: 14px; color: #202124;">
+          <strong style="color: #1a73e8;">📋 What is this?</strong>
+        </p>
+        <p style="margin: 0 0 8px 0; font-size: 13px; color: #5f6368;">
+          Configure the Google Sheet URL where MMI clarifications are stored. This is used for:
+        </p>
+        <ul style="margin: 8px 0; padding-left: 20px; font-size: 13px; color: #5f6368;">
+          <li>📊 <strong>Fetch Data</strong> button: Auto-populate Key Cases from sheet row numbers</li>
+          <li>🔗 <strong>Row Links</strong>: Generate clickable links to specific rows in emails</li>
+        </ul>
+        <p style="margin: 8px 0 0 0; font-size: 11px; color: #5f6368; font-family: monospace; background-color: white; padding: 8px; border-radius: 4px;">
+          Link format: <strong>Base URL</strong> + &range=<strong>RowNr</strong>:<strong>RowNr</strong>
+        </p>
+      </div>
+
+      <div id="support-row-link-current-status" style="background-color: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #e8eaed;">
+        <p style="margin: 0 0 8px 0; font-size: 12px; color: #5f6368; font-weight: 500;">Current Status:</p>
+        <p id="support-row-link-status-text" style="margin: 0; font-size: 13px; color: #202124;">Loading...</p>
+      </div>
+
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; font-weight: 500; margin-bottom: 8px; color: #5f6368;">
+          New Base URL <span style="color: #d93025;">*</span>
+        </label>
+        <input type="text" id="support-row-link-base-url-input" placeholder="https://docs.google.com/spreadsheets/d/..." style="width: 100%; padding: 12px; border: 1px solid #dadce0; border-radius: 4px; font-size: 13px; font-family: monospace;">
+        <p style="margin: 5px 0 0 0; font-size: 11px; color: #5f6368;">
+          💡 <strong>Example:</strong> https://docs.google.com/spreadsheets/d/1aQ_fD7BMpi7Ba7wCAzQLfdgpEfu79CA6AnpTgouOFI4/edit?gid=1763023571#gid=1763023571
+        </p>
+      </div>
+
+      <div style="background-color: #fff4e5; padding: 12px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #f9ab00;">
+        <p style="margin: 0; font-size: 12px; color: #5f6368;">
+          <strong style="color: #f9ab00;">⚠️ Important:</strong> This change affects all future emails. Make sure to update this URL at the beginning of each semester when the tracking sheet changes.
+        </p>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; gap: 10px; border-top: 1px solid #e8eaed; padding-top: 15px;">
+        <button onclick="resetSupportRowLinkBaseUrl()" style="background-color: #5f6368; color: white; padding: 12px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">
+          🔄 Reset to Default
+        </button>
+        <div style="display: flex; gap: 10px;">
+          <button onclick="closeModal('support-row-link-config-modal')" style="background-color: #dadce0; color: #202124; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Cancel</button>
+          <button onclick="saveSupportRowLinkBaseUrl()" style="background-color: #1a73e8; color: white; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">✓ Save URL</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Clarification Sheet URL Configuration Modal -->
+  <div id="clarification-sheet-config-modal" class="modal">
+    <div class="modal-content" style="max-width: 700px;">
+      <span class="close" onclick="closeModal('clarification-sheet-config-modal')">&times;</span>
+      <h3 style="margin-top: 0; color: #202124; border-bottom: 2px solid #34a853; padding-bottom: 10px;">
+        <span style="font-size: 20px;">📊</span> Clarification Sheet Configuration
+      </h3>
+      
+      <div style="background-color: #e8f5e9; padding: 15px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #34a853;">
+        <p style="margin: 0 0 10px 0; font-size: 14px; color: #202124;">
+          <strong style="color: #34a853;">📋 What is this?</strong>
+        </p>
+        <p style="margin: 0 0 8px 0; font-size: 13px; color: #5f6368;">
+          Configure the URL for the external Google Sheet containing clarification data. When you enter a Row Number in Key Cases and click "Fetch Data", the system will automatically extract:
+        </p>
+        <ul style="margin: 8px 0 0 0; font-size: 12px; color: #5f6368; padding-left: 20px;">
+          <li>Policy Area</li>
+          <li>Clarification Question (from 4 fields)</li>
+          <li>PEM Response</li>
+          <li>Final Decision / Policy ID</li>
+        </ul>
+      </div>
+
+      <div id="clarification-sheet-current-status" style="background-color: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #e8eaed;">
+        <p style="margin: 0 0 8px 0; font-size: 12px; color: #5f6368; font-weight: 500;">Current Status:</p>
+        <p id="clarification-sheet-status-text" style="margin: 0; font-size: 13px; color: #202124;">Loading...</p>
+      </div>
+
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; font-weight: 500; margin-bottom: 8px; color: #5f6368;">
+          Clarification Sheet URL <span style="color: #d93025;">*</span>
+        </label>
+        <input type="text" id="clarification-sheet-url-input" placeholder="https://docs.google.com/spreadsheets/d/..." style="width: 100%; padding: 12px; border: 1px solid #dadce0; border-radius: 4px; font-size: 13px; font-family: monospace;">
+        <p style="margin: 5px 0 0 0; font-size: 11px; color: #5f6368;">
+          💡 <strong>Default:</strong> https://docs.google.com/spreadsheets/d/1aQ_fD7BMpi7Ba7wCAzQLfdgpEfu79CA6AnpTgouOFI4/edit?gid=1763023571#gid=1763023571
+        </p>
+      </div>
+
+      <div style="background-color: #fff4e5; padding: 12px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #f9ab00;">
+        <p style="margin: 0; font-size: 12px; color: #5f6368;">
+          <strong style="color: #f9ab00;">⚠️ Important:</strong> This URL should point to the sheet containing Entity IDs, Policy Areas, PEM Responses, and other clarification data. Update this when the clarification tracking sheet changes.
+        </p>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; gap: 10px; border-top: 1px solid #e8eaed; padding-top: 15px;">
+        <button onclick="resetClarificationSheetUrl()" style="background-color: #5f6368; color: white; padding: 12px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">
+          🔄 Reset to Default
+        </button>
+        <div style="display: flex; gap: 10px;">
+          <button onclick="closeModal('clarification-sheet-config-modal')" style="background-color: #dadce0; color: #202124; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Cancel</button>
+          <button onclick="saveClarificationSheetUrl()" style="background-color: #34a853; color: white; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">✓ Save URL</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="status" class="status"></div>
+  </div> <!-- End main-app -->
+
+  <!-- Admin Recipients Editor Modal -->
+  <div id="admin-recipients-editor-modal" class="modal">
+    <div class="modal-content" style="max-width: 800px;">
+      <span class="close" onclick="closeModal('admin-recipients-editor-modal')">&times;</span>
+      <h3 style="margin-top: 0; color: #202124; border-bottom: 2px solid #3498db; padding-bottom: 10px;">
+        <span style="font-size: 20px;">📧</span> Email Recipients Manager
+      </h3>
+      
+      <div style="background-color: #e8f4f8; padding: 12px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #3498db;">
+        <p style="margin: 0 0 8px 0; font-size: 14px; color: #202124;">
+          <strong style="color: #3498db;">� Total Recipients:</strong> <span id="admin-recipients-total-count" style="font-size: 18px; font-weight: bold; color: #1a73e8;">0</span>
+        </p>
+        <p style="margin: 0; font-size: 12px; color: #5f6368;">
+          💡 Click the <strong>X</strong> button to remove a recipient. Add new emails below. All changes are saved automatically.
+        </p>
+      </div>
+
+      <div id="admin-recipients-editor-list" style="max-height: 450px; overflow-y: auto; margin-bottom: 20px; border: 1px solid #e8eaed; border-radius: 6px; padding: 15px; background-color: #fafafa;">
+        <!-- Recipients will be populated here -->
+      </div>
+
+      <div style="background-color: #f8f9fa; padding: 15px; border-radius: 6px; border: 1px solid #e8eaed; margin-bottom: 20px;">
+        <h4 style="margin: 0 0 12px 0; color: #5f6368; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+          <span>➕</span> Add New Recipient
+        </h4>
+        <div style="display: flex; gap: 10px;">
+          <input type="email" id="admin-new-recipient-email" placeholder="Enter email address (e.g., user@google.com)" style="flex: 1; padding: 12px; border: 1px solid #dadce0; border-radius: 4px; font-size: 14px;">
+          <button onclick="addAdminRecipientToList()" style="background-color: #34a853; color: white; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.2); transition: background-color 0.2s;">
+            <span style="font-size: 16px;">+</span> Add Email
+          </button>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid #e8eaed; padding-top: 15px;">
+        <button onclick="closeModal('admin-recipients-editor-modal')" style="background-color: #1a73e8; color: white; padding: 12px 32px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">
+          ✓ Done
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div id="status" class="status"></div>
+  </div> <!-- End main-app -->
+
+  <!-- Admin Preview Page (OUTSIDE main-app but INSIDE app-container) -->
+  <div id="admin-preview-page-container" style="display:none;">
+    <div id="admin-preview-header">
+      <h2>Email Preview</h2>
+      <div id="admin-recipients-section" style="background-color: #ffffff; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #dadce0; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 2px solid #3498db; padding-bottom: 10px;">
+          <h3 style="margin: 0; font-size: 17px; color: #202124; font-weight: 600;">Email Recipients</h3>
+        </div>
+        <div style="display: flex; align-items: center; gap: 15px;">
+          <button onclick="viewRecipientsList()" style="background-color: #1a73e8; color: white; padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 8px; transition: background-color 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">
+            <span style="font-size: 18px;">📧</span>
+            <span id="admin-recipients-count-text">Loading recipients...</span>
+          </button>
+          <div style="flex: 1; padding: 10px; background-color: #e8f4f8; border-left: 4px solid #3498db; border-radius: 4px; font-size: 12px; color: #5f6368;">
+            <strong style="color: #3498db;">ℹ️ Info:</strong> Click the button to view and edit the full recipient list
+          </div>
+        </div>
+      </div>
+      <div id="admin-final-actions-div" class="action-buttons" style="margin-top:0;">
+        <button id="admin-back-to-edit-btn" onclick="backToAdminEdit()" style="background-color: var(--dark-gray);">Back to Edit</button>
+        <button id="admin-live-send-btn" onclick="sendAdminLiveEmail()" style="background-color: var(--secondary-color);">Send Email</button>
+        <button id="admin-preview-history-btn" onclick="openAdminHistoryModal()" style="background-color: #0066cc;">📋 View History</button>
+      </div>
+      <button id="admin-start-over-btn" onclick="startAdminOver()" style="display:none; background-color: var(--primary-color);">Start Over</button>
+    </div>
+    <div id="admin-preview-iframe-wrapper"><iframe id="admin-email-preview"></iframe></div>
+  </div>
+
+  <!-- Link Insert Modal -->
+  <div id="link-insert-modal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 500px;">
+      <span class="close" onclick="closeModal('link-insert-modal')">&times;</span>
+      <h3 style="margin-top: 0; color: #2c3e50;">🔗 Insert Link</h3>
+      <div style="margin: 20px 0;">
+        <label for="link-text-input" style="display: block; margin-bottom: 8px; font-weight: 600;">Link Text:</label>
+        <input type="text" id="link-text-input" placeholder="Enter text to display" style="width: 100%; padding: 10px; border: 2px solid #e1e8ed; border-radius: 6px; font-size: 14px;">
+      </div>
+      <div style="margin: 20px 0;">
+        <label for="link-url-input" style="display: block; margin-bottom: 8px; font-weight: 600;">URL:</label>
+        <input type="text" id="link-url-input" placeholder="https://example.com" style="width: 100%; padding: 10px; border: 2px solid #e1e8ed; border-radius: 6px; font-size: 14px;">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+        <button onclick="closeModal('link-insert-modal')" style="background-color: #e0e0e0; color: #333; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">Cancel</button>
+        <button onclick="confirmInsertLink()" style="background-color: #3498db; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">Insert Link</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Image Insert Modal -->
+  <div id="image-insert-modal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 500px;">
+      <span class="close" onclick="closeModal('image-insert-modal')">&times;</span>
+      <h3 style="margin-top: 0; color: #2c3e50;">🖼️ Insert Image</h3>
+      <div style="margin: 20px 0;">
+        <label for="image-url-input" style="display: block; margin-bottom: 8px; font-weight: 600;">Image URL:</label>
+        <input type="text" id="image-url-input" placeholder="https://example.com/image.jpg" style="width: 100%; padding: 10px; border: 2px solid #e1e8ed; border-radius: 6px; font-size: 14px;">
+        <p style="font-size: 12px; color: #7f8c8d; margin-top: 8px;">💡 Tip: You can use image URLs from Google Drive, Imgur, or other image hosting services.</p>
+      </div>
+      <div style="margin: 20px 0;">
+        <label for="image-alt-input" style="display: block; margin-bottom: 8px; font-weight: 600;">Alt Text (optional):</label>
+        <input type="text" id="image-alt-input" placeholder="Describe the image" style="width: 100%; padding: 10px; border: 2px solid #e1e8ed; border-radius: 6px; font-size: 14px;">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+        <button onclick="closeModal('image-insert-modal')" style="background-color: #e0e0e0; color: #333; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">Cancel</button>
+        <button onclick="confirmInsertImage()" style="background-color: #3498db; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">Insert Image</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test Email Modal -->
+  <div id="test-email-modal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 600px;">
+      <span class="close" onclick="closeModal('test-email-modal')">&times;</span>
+      <h3 style="margin-top: 0; color: #2c3e50;">📧 Send Test Email</h3>
+      <p style="color: #7f8c8d; font-size: 14px; margin-bottom: 20px;">Enter an LDAP to send a test email with the current preview content.</p>
+      
+      <div style="margin: 20px 0;">
+        <label for="test-email-ldap" style="display: block; margin-bottom: 8px; font-weight: 600;">LDAP (without @google.com):</label>
+        <input type="text" id="test-email-ldap" placeholder="e.g., jdoe" style="width: 100%; padding: 12px; border: 2px solid #e1e8ed; border-radius: 6px; font-size: 14px;">
+        <p style="font-size: 12px; color: #7f8c8d; margin-top: 5px;">💡 The email will be sent to: <strong><span id="test-email-preview">jdoe@google.com</span></strong></p>
+      </div>
+      
+      <div style="background-color: #fff7e0; border-left: 4px solid #f9ab00; padding: 12px; border-radius: 4px; margin: 20px 0;">
+        <p style="margin: 0; color: #b06000; font-size: 13px;">⚠️ This will send a real email using the current form data. Make sure the preview looks correct before sending.</p>
+      </div>
+      
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+        <button onclick="closeModal('test-email-modal')" style="background-color: #e0e0e0; color: #333; padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">Cancel</button>
+        <button onclick="sendTestEmail()" style="background-color: #f9ab00; color: white; padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">📧 Send Test Email</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Support History Page Section -->
+  <div id="support-history-page" class="section" style="display:none;">
+    <div class="container">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h2 style="margin: 0;"><span style="color: #3498db; font-weight: 600;">Email</span> History</h2>
+        <button onclick="backFromSupportHistoryPage()" style="background-color: #666; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">← Back to Support</button>
+      </div>
+      
+      <div style="display: flex; gap: 20px; height: calc(100vh - 250px);">
+        <!-- Left: Email List -->
+        <div style="width: 30%; border-right: 2px solid #e0e0e0; overflow-y: auto; padding-right: 20px;">
+          <h3 style="margin-top: 0; color: #202124;">Sent Emails</h3>
+          <div id="support-history-page-list" style="margin-top: 10px;">
+            <p>Loading history...</p>
+          </div>
+        </div>
+        
+        <!-- Right: Email Details -->
+        <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+          <div id="support-history-page-details" style="display: none; flex: 1; overflow: auto;">
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                <div>
+                  <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">SENT BY (LDAP)</p>
+                  <p id="history-detail-ldap" style="margin: 0; font-size: 14px; font-weight: 600;">—</p>
+                </div>
+                <div>
+                  <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">SENT AT</p>
+                  <p id="history-detail-timestamp" style="margin: 0; font-size: 14px; font-weight: 600;">—</p>
+                </div>
+                <div>
+                  <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">WORKFLOW</p>
+                  <p id="history-detail-workflow" style="margin: 0; font-size: 14px; font-weight: 600;">—</p>
+                </div>
+                <div>
+                  <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">SUBJECT</p>
+                  <p id="history-detail-subject" style="margin: 0; font-size: 14px; font-weight: 600;">—</p>
+                </div>
+              </div>
+              
+              <div style="margin-top: 15px;">
+                <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">TO</p>
+                <p id="history-detail-to" style="margin: 0; font-size: 13px; word-break: break-word;">—</p>
+              </div>
+              
+              <div style="margin-top: 10px;">
+                <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">CC</p>
+                <p id="history-detail-cc" style="margin: 0; font-size: 13px; word-break: break-word;">—</p>
+              </div>
+            </div>
+            
+            <h3 style="margin-top: 0; color: #202124; border-top: 2px solid #e0e0e0; padding-top: 15px;">Email Content</h3>
+            <div id="support-history-page-preview" style="background: white; border: 1px solid #ccc; border-radius: 8px; padding: 20px; min-height: 300px;"></div>
+          </div>
+          
+          <div id="support-history-page-no-selection" style="display: flex; align-items: center; justify-content: center; height: 100%; color: #999; text-align: center;">
+            <p>Select an email from the list to view details</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin History Page Section -->
+  <div id="admin-history-page" class="section" style="display:none;">
+    <div class="container">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h2 style="margin: 0;"><span style="color: #3498db; font-weight: 600;">Admin Email</span> History</h2>
+        <button onclick="backFromAdminHistoryPage()" style="background-color: #666; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">← Back to Admin</button>
+      </div>
+      
+      <div style="display: flex; gap: 20px; height: calc(100vh - 250px);">
+        <!-- Left: Email List -->
+        <div style="width: 30%; border-right: 2px solid #e0e0e0; overflow-y: auto; padding-right: 20px;">
+          <h3 style="margin-top: 0; color: #202124;">Sent Emails</h3>
+          <div id="admin-history-page-list" style="margin-top: 10px;">
+            <p>Loading history...</p>
+          </div>
+        </div>
+        
+        <!-- Right: Email Details -->
+        <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+          <div id="admin-history-page-details" style="display: none; flex: 1; overflow: auto;">
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                <div>
+                  <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">SENT BY (LDAP)</p>
+                  <p id="admin-history-detail-ldap" style="margin: 0; font-size: 14px; font-weight: 600;">—</p>
+                </div>
+                <div>
+                  <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">SENT AT</p>
+                  <p id="admin-history-detail-timestamp" style="margin: 0; font-size: 14px; font-weight: 600;">—</p>
+                </div>
+                <div>
+                  <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">WORKFLOW</p>
+                  <p id="admin-history-detail-workflow" style="margin: 0; font-size: 14px; font-weight: 600;">—</p>
+                </div>
+              </div>
+              
+              <div style="margin-top: 15px;">
+                <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">SUBJECT</p>
+                <p id="admin-history-detail-subject" style="margin: 0; font-size: 14px; font-weight: 600;">—</p>
+              </div>
+              
+              <div style="margin-top: 10px;">
+                <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">TO</p>
+                <p id="admin-history-detail-to" style="margin: 0; font-size: 13px; word-break: break-word;">—</p>
+              </div>
+              
+              <div style="margin-top: 10px;">
+                <p style="margin: 0 0 5px 0; color: #666; font-size: 12px; font-weight: 500;">CC</p>
+                <p id="admin-history-detail-cc" style="margin: 0; font-size: 13px; word-break: break-word;">—</p>
+              </div>
+            </div>
+            
+            <h3 style="margin-top: 0; color: #202124; border-top: 2px solid #e0e0e0; padding-top: 15px;">Email Content</h3>
+            <div id="admin-history-page-preview" style="background: white; border: 1px solid #ccc; border-radius: 8px; padding: 20px; min-height: 300px;"></div>
+          </div>
+          
+          <div id="admin-history-page-no-selection" style="display: flex; align-items: center; justify-content: center; height: 100%; color: #999; text-align: center;">
+            <p>Select an email from the list to view details</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin Email History Modal -->
+  <div id="admin-history-modal" class="modal" style="display:none;">
+    <div class="modal-content" style="width: 95%; max-width: 1000px; max-height: 85vh; display: flex; flex-direction: column;">
+      <span class="close" onclick="closeModal('admin-history-modal')">&times;</span>
+      <h2 style="margin: 0 0 15px 0;">Admin Email History</h2>
+      <div style="display: flex; gap: 15px; flex: 1; min-height: 0;">
+        <!-- Left side: List of emails -->
+        <div style="width: 35%; border-right: 2px solid #e0e0e0; overflow-y: auto; padding-right: 15px;">
+          <div id="admin-history-list" style="margin-top: 10px;">
+            <p>Loading history...</p>
+          </div>
+        </div>
+        <!-- Right side: Email preview -->
+        <div style="flex: 1; display: flex; flex-direction: column;">
+          <div id="admin-history-preview-section" style="flex: 1; display: none; min-height: 0; overflow: auto;">
+            <h3 style="margin: 0 0 10px 0; color: #202124;">Email Preview</h3>
+            <div id="admin-history-email-preview" style="width: 100%; border: 1px solid #ccc; border-radius: 4px; padding: 15px; background: white;"></div>
+          </div>
+          <div id="admin-history-no-selection" style="display: flex; align-items: center; justify-content: center; height: 100%; color: #999; text-align: center;">
+            <p>Select an email from the list to view</p>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top: 15px; border-top: 1px solid #e0e0e0; padding-top: 15px;">
+        <button onclick="closeModal('admin-history-modal')" style="background-color: #e0e0e0; color: #333; padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">Close</button>
+        <button onclick="refreshAdminHistory()" style="background-color: #0066cc; color: white; padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; margin-left: 10px;">🔄 Refresh</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Support Email History Modal -->
+  <div id="support-history-modal" class="modal" style="display:none;">
+    <div class="modal-content" style="width: 95%; max-width: 1000px; max-height: 85vh; display: flex; flex-direction: column;">
+      <span class="close" onclick="closeModal('support-history-modal')">&times;</span>
+      <h2 style="margin: 0 0 15px 0;">Support Team Email History</h2>
+      <div style="display: flex; gap: 15px; flex: 1; min-height: 0;">
+        <!-- Left side: List of emails -->
+        <div style="width: 35%; border-right: 2px solid #e0e0e0; overflow-y: auto; padding-right: 15px;">
+          <div id="support-history-list" style="margin-top: 10px;">
+            <p>Loading history...</p>
+          </div>
+        </div>
+        <!-- Right side: Email preview -->
+        <div style="flex: 1; display: flex; flex-direction: column;">
+          <div id="support-history-preview-section" style="flex: 1; display: none; min-height: 0; overflow: auto;">
+            <h3 style="margin: 0 0 10px 0; color: #202124;">Email Preview</h3>
+            <div id="support-history-email-preview" style="width: 100%; border: 1px solid #ccc; border-radius: 4px; padding: 15px; background: white;"></div>
+          </div>
+          <div id="support-history-no-selection" style="display: flex; align-items: center; justify-content: center; height: 100%; color: #999; text-align: center;">
+            <p>Select an email from the list to view</p>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top: 15px; border-top: 1px solid #e0e0e0; padding-top: 15px;">
+        <button onclick="closeModal('support-history-modal')" style="background-color: #e0e0e0; color: #333; padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">Close</button>
+        <button onclick="refreshSupportHistory()" style="background-color: #0066cc; color: white; padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; margin-left: 10px;">🔄 Refresh</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Notification Toast -->
+  <div id="notification-toast"></div>
+
+</div>
+
+<?!= HtmlService.createHtmlOutputFromFile('MainJs').getContent(); ?>
+
+</body>
+</html>
