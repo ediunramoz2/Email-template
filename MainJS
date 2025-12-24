@@ -1,0 +1,3645 @@
+<script>
+let APP_DATA = {}, SELECTED_EVENT = {}, formDataForEmail = {};
+let SUPPORT_ALL_PEMS = [], SUPPORT_ALL_POCS = [], SUPPORT_ALL_MANAGERS = [];
+let SUPPORT_SENT_HISTORY = [];
+let supportFullFormData = {};
+
+// Auto-save and UI enhancements
+let autoSaveInterval = null;
+let lastSaveTime = null;
+let isSplitScreenMode = false;
+
+// Constants
+const POLICY_AREAS = [
+  'Harmful Substances & Practices',
+  'GVM',
+  'Cancer',
+  'PII EDSA / EDSA',
+  'Nicotine and Tobacco'
+];
+
+const supportVerticalsByWorkflow = {
+  GMI: [
+    { abbr: 'SSL', name: 'SSL Synthetic speech labeling' },
+    { abbr: 'DP', name: 'DP Deceptive practices' },
+    { abbr: 'CNI', name: 'CNI civics and news' }
+  ],
+  SA: [
+    { abbr: 'MSAB', name: 'MSAB Malicious spam account behavior' },
+    { abbr: 'IMP', name: 'IMP Impersonation' }
+  ],
+  MMI: []
+};
+
+// Landing Page Functions
+function selectApp(appType) {
+  document.getElementById('landing-page').style.display = 'none';
+  document.getElementById('main-app').style.display = 'block';
+
+  if (appType === 'admin') {
+    showSection('admin-section');
+  } else if (appType === 'support') {
+    showSection('support-section');
+
+    // Check if support data is loaded
+    if (SUPPORT_ALL_PEMS.length === 0 && SUPPORT_ALL_POCS.length === 0 && SUPPORT_ALL_MANAGERS.length === 0) {
+      document.getElementById('support-meetings-list').innerHTML = '<p>Loading support data...</p>';
+      // Trigger manual initialization if data is not loaded
+      setTimeout(() => {
+        if (SUPPORT_ALL_PEMS.length === 0) {
+          manualInitialize();
+        }
+      }, 1000);
+    } else {
+      // Auto-load events for today's date
+      const today = new Date().toISOString().split('T')[0];
+      document.getElementById('support-event-date-picker').value = today;
+      loadSupportEventsForDate();
+    }
+  }
+}
+
+// Update local time in header
+function updateLocalTime() {
+  const now = new Date();
+  const timeString = now.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true
+  });
+  const timeElement = document.getElementById('local-time');
+  if (timeElement) {
+    timeElement.textContent = timeString;
+  }
+  
+  // Update auto-save indicator
+  updateAutoSaveIndicator();
+}
+
+// Auto-save functionality
+function updateAutoSaveIndicator() {
+  const indicator = document.getElementById('autosave-indicator');
+  const textElement = document.getElementById('autosave-text');
+  
+  if (!indicator || !lastSaveTime) return;
+  
+  indicator.style.display = 'block';
+  const secondsAgo = Math.floor((Date.now() - lastSaveTime) / 1000);
+  
+  if (secondsAgo < 5) {
+    textElement.textContent = 'Saved just now';
+  } else if (secondsAgo < 60) {
+    textElement.textContent = `Saved ${secondsAgo}s ago`;
+  } else {
+    const minutesAgo = Math.floor(secondsAgo / 60);
+    textElement.textContent = `Saved ${minutesAgo}m ago`;
+  }
+}
+
+function startAutoSave() {
+  // Clear existing interval if any
+  if (autoSaveInterval) {
+    clearInterval(autoSaveInterval);
+  }
+  
+  // Auto-save every 30 seconds
+  autoSaveInterval = setInterval(() => {
+    const adminForm = document.getElementById('admin-form-container');
+    const supportForm = document.getElementById('support-form-container');
+    
+    if (adminForm && adminForm.style.display !== 'none') {
+      saveAdminFormState();
+      lastSaveTime = Date.now();
+    } else if (supportForm && supportForm.style.display !== 'none') {
+      saveSupportFormState();
+      lastSaveTime = Date.now();
+    }
+  }, 30000); // 30 seconds
+}
+
+function saveAdminFormState() {
+  // Existing admin save logic would go here
+  // For now, we'll just mark the save time
+  console.log('Auto-saving admin form...');
+}
+
+function stopAutoSave() {
+  if (autoSaveInterval) {
+    clearInterval(autoSaveInterval);
+    autoSaveInterval = null;
+  }
+}
+
+// Start time update and auto-save when app loads
+setInterval(updateLocalTime, 1000);
+updateLocalTime(); // Initial call
+startAutoSave(); // Start auto-save timer
+
+function getUserGreeting() {
+  google.script.run.withSuccessHandler(email => {
+    const userName = email.split('@')[0];
+    const greeting = `Welcome, ${userName.charAt(0).toUpperCase() + userName.slice(1)}!`;
+    document.getElementById('user-greeting').textContent = greeting;
+  }).withFailureHandler(() => {
+    document.getElementById('user-greeting').textContent = 'Welcome to Summary Emails App!';
+  }).getUserEmail();
+}
+
+// Navigation
+function showSection(sectionId) {
+  document.querySelectorAll('.section').forEach(s => s.style.display = 'none');
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(sectionId).style.display = 'block';
+  
+  // Only try to activate tab if it exists (some sections like history pages don't have tabs)
+  const tab = document.querySelector(`.nav-tab[onclick="showSection('${sectionId}')"]`);
+  if (tab) {
+    tab.classList.add('active');
+  }
+}
+
+// Meeting Summary Generator for Admins Functions
+function initializeAdminApp(data) {
+  if (!data || data.error) {
+    console.error(' Admin config error:', data ? data.error : 'No data');
+    document.getElementById('admin-loader').innerHTML = `<p style="color:red;">Error loading configuration: ${data ? data.error : 'No data received'}</p><p>Please check that the 'Workflows' and 'EmailTemplates' sheets exist in your spreadsheet.</p>`;
+    return;
+  }
+
+  if (!data.workflows || data.workflows.length === 0) {
+    console.warn(' No workflows found');
+    document.getElementById('admin-loader').innerHTML = `<p style="color:orange;">Warning: No workflows found in the spreadsheet.</p><p>Please check that the 'Workflows' sheet has data starting from row 5.</p>`;
+  }
+
+  APP_DATA = data;
+  const selector = document.getElementById('admin-workflow-selector');
+
+  // Clear existing options first to prevent duplicates
+  selector.innerHTML = '<option value="">-- Select --</option>';
+
+  if (data.workflows && data.workflows.length > 0) {
+    data.workflows.forEach(wf => {
+      selector.innerHTML += `<option value="${wf.name}">${wf.name}</option>`;
+    });
+  }
+
+  document.getElementById('admin-loader').style.display = 'none';
+  document.getElementById('admin-app-content').style.display = 'block';
+
+}
+
+function toggleAdminMMIConfigButton() {
+  const workflowName = document.getElementById('admin-workflow-selector')?.value;
+  const button = document.getElementById('admin-mmi-config-btn');
+  
+  if (button) {
+    button.style.display = (workflowName === 'MMI') ? 'inline-block' : 'none';
+  }
+}
+
+function onAdminWorkflowSelect() {
+  const workflowName = document.getElementById('admin-workflow-selector').value;
+  toggleAdminMMIConfigButton(); // Show/hide MMI config button
+  document.getElementById('admin-calendar-section').style.display = workflowName ? 'block' : 'none';
+  const datePicker = document.getElementById('admin-event-date-picker');
+  if (workflowName && !datePicker.value) datePicker.valueAsDate = new Date();
+  loadAdminEvents();
+}
+
+function loadAdminEvents() {
+  const date = document.getElementById('admin-event-date-picker').value;
+  if (!date) { 
+    document.getElementById('admin-meetings-list').innerHTML = ''; 
+    return; 
+  }
+  document.getElementById('admin-meetings-list').innerHTML = '<p><em>Loading events...</em></p>';
+  google.script.run.withSuccessHandler(displayAdminEvents).withFailureHandler(error => {
+    document.getElementById('admin-meetings-list').innerHTML = '<p style="color:red;">Error loading events: ' + error.message + '</p>';
+    console.error('Error loading admin events:', error);
+  }).getEventsForDate(date);
+}
+
+function displayAdminEvents(events) {
+  const list = document.getElementById('admin-meetings-list');
+  list.innerHTML = '';
+  if (!events || events.length === 0) { 
+    list.innerHTML = '<p>No meetings found for this date. Try selecting a different date or check if you have calendar access.</p>'; 
+    return; 
+  }
+  events.forEach(event => {
+    const item = document.createElement('div');
+    item.className = 'meeting-item';
+    item.innerHTML = `<span><strong>${event.time}</strong> - ${event.title}</span><span>›</span>`;
+    item.onclick = () => selectAdminEvent(event);
+    list.appendChild(item);
+  });
+}
+
+function selectAdminEvent(event) {
+  SELECTED_EVENT = event;
+  const workflowName = document.getElementById('admin-workflow-selector').value;
+  document.getElementById('admin-summary-workflow').textContent = workflowName;
+  document.getElementById('admin-summary-event').textContent = event.title;
+  document.getElementById('admin-selection-summary').style.display = 'flex';
+  document.getElementById('admin-initial-selection-steps').style.display = 'none';
+  const formContainer = document.getElementById('admin-form-container');
+  
+  if (workflowName === 'SA') {
+    // Load SA LDAPs from external sheet
+    google.script.run.withSuccessHandler(ldaps => {
+      // Store LDAPs for later use
+      window.SA_LDAPS = ldaps;
+      console.log(' SA LDAPs loaded:', ldaps);
+    }).withFailureHandler(err => {
+      console.error(' Error loading SA LDAPs:', err);
+    }).getSALdapsFromExternalSheet();
+    
+    formContainer.innerHTML = `<h3 style="border:none; padding-top:0; margin-top:20px;">Fill Details for "${event.title}"</h3>` + generateAdminSAForm();
+    // Initialize rich text editors for SA form after DOM is ready
+    setTimeout(() => {
+      initializeAdminRichTextEditors('SA');
+    }, 100);
+  } else if (workflowName === 'MMI') {
+    // Load MMI LDAPs from external sheet
+    google.script.run.withSuccessHandler(ldaps => {
+      // Store LDAPs for later use if needed
+      window.MMI_LDAPS = ldaps;
+    }).withFailureHandler(err => {
+      console.error(' Error loading MMI LDAPs:', err);
+    }).getMMILdapsFromExternalSheet();
+    
+    formContainer.innerHTML = `<h3 style="border:none; padding-top:0; margin-top:20px;">Fill Details for "${event.title}"</h3>` + generateAdminMMIForm();
+    // Initialize rich text editors for MMI form after DOM is ready
+    setTimeout(() => {
+      initializeAdminRichTextEditors('MMI');
+    }, 100);
+  }
+  document.getElementById('admin-main-form').style.display = 'block';
+}
+
+function changeAdminSelection() {
+  document.getElementById('admin-initial-selection-steps').style.display = 'block';
+  document.getElementById('admin-selection-summary').style.display = 'none';
+  document.getElementById('admin-main-form').style.display = 'none';
+  SELECTED_EVENT = {};
+}
+
+function createCollapsibleSection(sectionId, title, content, isOptional = false) {
+  const optionalLabel = isOptional ? ' (Optional)' : '';
+  return `<div class="collapsible-section"><button type="button" class="collapsible-header" onclick="toggleCollapsible(this)"><span class="toggle-icon">▶</span>${title}${optionalLabel}</button><div class="collapsible-content" style="display: none; max-height: 600px; overflow-y: auto;">${content}</div></div>`;
+}
+
+function generateAdminSAForm() {
+  const teamSelectorContent = `<label>Select Team(s) to send email to:</label><div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;"><div class="option-item"><input type="checkbox" id="admin-sa-team-msab" value="MSAB"><label for="admin-sa-team-msab">MSAB (Impersonation Lis + Deceptive Identity Lis)</label></div><div class="option-item"><input type="checkbox" id="admin-sa-team-impersonation" value="Impersonation Lis"><label for="admin-sa-team-impersonation">Impersonation Lis (solo)</label></div><div class="option-item"><input type="checkbox" id="admin-sa-team-civics" value="Civics News"><label for="admin-sa-team-civics">Civics News</label></div></div>`;
+  const teamSelectorSection = `<div class="form-section"><label style="font-weight: 600; color: #202124;">Team Selection</label>${teamSelectorContent}</div>`;
+  
+  const recipientsContent = `<div style="background-color: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #34a853;"><p style="margin: 0 0 10px 0; font-size: 13px; color: #5f6368;"><strong style="color: #34a853;">ℹ️ Auto CC:</strong> Ops Leads + Support Team PoCs for selected workflow will be automatically included</p><div class="option-item" style="margin-top: 10px;"><input type="checkbox" id="admin-recipient-managers"><label for="admin-recipient-managers" style="font-weight: 500;">Include Managers (Optional)</label></div></div>`;
+  const recipientsSection = `<div class="form-section"><label style="font-weight: 600; color: #202124;">Recipients</label>${recipientsContent}</div>`;
+  
+  const goldenSetContent = `<label for="admin-gs-date">Cycle Date</label><input type="date" id="admin-gs-date"><label for="admin-gs-pre-score">Pre-appeal score (%)</label><input type="number" id="admin-gs-pre-score" step="0.01"><label for="admin-gs-post-score">Post-appeal score (%)</label><input type="number" id="admin-gs-post-score" step="0.01"><label for="admin-gs-optional-comment">Optional Comment</label><textarea id="admin-gs-optional-comment" rows="3" placeholder="Add any comments about the Golden Set here..."></textarea>`;
+  const goldenSetSection = `<div class="form-section">${createCollapsibleSection('admin-gs-section', 'Golden Set Results', goldenSetContent, true)}</div>`;
+  
+  const fteContent = `<div id="admin-fte-cases-container"></div><button type="button" onclick="addAdminCaseRow('admin-fte-cases-container', 'standard')" style="background-color: #34a853; font-size: 14px; padding: 8px 12px;">+ Add FTE Case</button>`;
+  const fteSection = `<div class="form-section">${createCollapsibleSection('admin-fte-section', 'FTE Calibrated', fteContent)}</div>`;
+  
+  const clarificationsContent = `<label for="admin-qa-clarification">QA question</label><textarea id="admin-qa-clarification" rows="4"></textarea><label for="admin-fte-answer-editor">FTE answer</label>${createAdminToolbar('admin-fte-answer-editor')}<div id="admin-fte-answer-editor" class="rich-text-editor" contenteditable="true" data-placeholder="Enter FTE answer with formatting..."></div>`;
+  const clarificationsSection = `<div class="form-section">${createCollapsibleSection('admin-clarifications-section', 'Clarifications', clarificationsContent, true)}</div>`;
+  
+  const calibrationContent = `<div id="admin-cal-cases-container"></div><button type="button" onclick="addAdminCaseRow('admin-cal-cases-container', 'calibration')" style="background-color: #34a853; font-size: 14px; padding: 8px 12px;">+ Add Calibration Case</button>`;
+  const calibrationSection = `<div class="form-section">${createCollapsibleSection('admin-calibration-section', 'Calibration Cases', calibrationContent, true)}</div>`;
+  
+  const additionalMessageContent = `<label for="admin-add-msg-title">Additional Message Title</label><input type="text" id="admin-add-msg-title" placeholder="e.g., Attention"><label>Additional Message Text</label>${createAdminToolbar('admin-add-msg-text')}<div id="admin-add-msg-text" class="rich-text-editor" contenteditable="true" data-placeholder="Enter additional message text here. You can use bold, italic, lists, links, etc."></div>`;
+  const additionalMessageSection = `<div class="form-section">${createCollapsibleSection('admin-additional-message-section', 'Additional Message', additionalMessageContent, true)}</div>`;
+  
+  return teamSelectorSection + recipientsSection + goldenSetSection + fteSection + clarificationsSection + calibrationSection + additionalMessageSection;
+}
+
+function toggleCollapsible(button) {
+  const content = button.nextElementSibling;
+  const icon = button.querySelector('.toggle-icon');
+  if (content.style.display === 'none') {
+    content.style.display = 'block';
+    icon.textContent = '▼';
+  } else {
+    content.style.display = 'none';
+    icon.textContent = '▶';
+  }
+}
+
+function generateAdminMMIForm() {
+  const teamSelectorContent = `<label>Select Team(s) to send email to:</label><div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;"><div class="option-item"><input type="checkbox" id="admin-mmi-team-all" value="All MMI"><label for="admin-mmi-team-all">All MMI</label></div><div class="option-item"><input type="checkbox" id="admin-mmi-team-lisbon" value="Lisbon"><label for="admin-mmi-team-lisbon">Lisbon (MMI Lis Combined)</label></div><div class="option-item"><input type="checkbox" id="admin-mmi-team-krakow" value="Krakow"><label for="admin-mmi-team-krakow">Krakow (MMI KRK)</label></div><div class="option-item"><input type="checkbox" id="admin-mmi-team-kl" value="Kuala Lumpur"><label for="admin-mmi-team-kl">Kuala Lumpur (MMI KL)</label></div></div>`;
+  const teamSelectorSection = `<div class="form-section"><label style="font-weight: 600; color: #202124;">Team Selection</label>${teamSelectorContent}</div>`;
+  
+  const recipientsContent = `<div style="background-color: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #34a853;"><p style="margin: 0 0 10px 0; font-size: 13px; color: #5f6368;"><strong style="color: #34a853;">ℹ️ Auto CC:</strong> Ops Leads + Support Team PoCs for selected workflow will be automatically included</p><div class="option-item" style="margin-top: 10px;"><input type="checkbox" id="admin-recipient-managers"><label for="admin-recipient-managers" style="font-weight: 500;">Include Managers (Optional)</label></div></div>`;
+  const recipientsSection = `<div class="form-section"><label style="font-weight: 600; color: #202124;">Recipients</label>${recipientsContent}</div>`;
+  
+  const goldenSetContent = `<label for="admin-mmi-gs-date">Cycle Date</label><input type="date" id="admin-mmi-gs-date"><label for="admin-mmi-gs-pre-score">Pre-appeal score (%)</label><input type="number" id="admin-mmi-gs-pre-score" step="0.01"><label for="admin-mmi-gs-post-score">Post-appeal score (%)</label><input type="number" id="admin-mmi-gs-post-score" step="0.01"><label for="admin-mmi-gs-optional-comment">Optional Comment</label><textarea id="admin-mmi-gs-optional-comment" rows="3" placeholder="Add any comments about the Golden Set here..."></textarea>`;
+  const goldenSetSection = `<div class="form-section">${createCollapsibleSection('admin-mmi-gs-section', 'Golden Set Results', goldenSetContent, true)}</div>`;
+  
+  const discussedContent = `${createAdminToolbar('admin-mmi-discussed-editor')}<div id="admin-mmi-discussed-editor" class="rich-text-editor" contenteditable="true" data-placeholder="Paste from Gemini or describe what was discussed. Formatting will be preserved."></div>`;
+  const discussedSection = `<div class="form-section"><label>What was discussed?</label>${discussedContent}</div>`;
+  
+  const goldenSetCasesContent = `<div id="admin-mmi-golden-set-cases-container" style="margin-bottom: 15px;"></div><button type="button" onclick="addGoldenSetCaseRow('admin-mmi-golden-set-cases-container')" style="background-color: #1a73e8; color: white; font-size: 14px; padding: 10px 14px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">+ Add Golden Set Case</button>`;
+  const goldenSetCasesSection = `<div class="form-section">${createCollapsibleSection('admin-mmi-golden-set-cases-section', 'Golden Set Cases', goldenSetCasesContent, true)}</div>`;
+  
+  const keyCasesContent = `<div id="admin-mmi-key-cases-container" style="margin-bottom: 15px;"></div><button type="button" onclick="addAdminMMICaseRow('admin-mmi-key-cases-container')" style="background-color: #34a853; color: white; font-size: 14px; padding: 10px 14px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">+ Add Key Case</button>`;
+  const keyCasesSection = `<div class="form-section">${createCollapsibleSection('admin-mmi-key-cases-section', 'Key Cases Discussed', keyCasesContent, true)}</div>`;
+  
+  const concerningContent = `<textarea id="admin-mmi-concerning-issues" rows="5" placeholder="List any specific problems, challenges, or concerning issues identified during the discussion..."></textarea>`;
+  const concerningSection = `<div class="form-section">${createCollapsibleSection('admin-mmi-concerning-section', 'Concerning Issues / Comments', concerningContent, true)}</div>`;
+  
+  const additionalMessageContent = `<label for="admin-mmi-add-msg-title">Additional Message Title</label><input type="text" id="admin-mmi-add-msg-title" placeholder="e.g., Attention"><label>Additional Message Text</label>${createAdminToolbar('admin-mmi-add-msg-text')}<div id="admin-mmi-add-msg-text" class="rich-text-editor" contenteditable="true" data-placeholder="Enter additional message text here. You can use bold, italic, lists, links, etc."></div>`;
+  const additionalMessageSection = `<div class="form-section">${createCollapsibleSection('admin-mmi-additional-message-section', 'Additional Message', additionalMessageContent, true)}</div>`;
+  
+  return teamSelectorSection + recipientsSection + goldenSetSection + discussedSection + goldenSetCasesSection + keyCasesSection + concerningSection + additionalMessageSection;
+}
+
+function addAdminMMICaseRow(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    console.error(`Container ${containerId} not found`);
+    return;
+  }
+  
+  const caseNumber = container.children.length + 1;
+  const newCase = document.createElement('div');
+  newCase.className = 'case-row';
+  newCase.style.cssText = 'background: #ffffff; border: 1px solid #dadce0; border-radius: 8px; padding: 18px; margin-bottom: 15px; box-shadow: 0 1px 4px rgba(0,0,0,0.08);';
+  
+  newCase.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #e8eaed;">
+      <h4 style="margin: 0; color: #34a853; font-size: 15px; font-weight: 600;">📌 Key Case #${caseNumber}</h4>
+      <button type="button" onclick="this.closest('.case-row').remove(); renumberKeyCases('${containerId}')" style="background-color: #d93025; color: white; padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 13px;">✕ Delete</button>
+    </div>
+    
+    <div style="margin-bottom: 12px; display: flex; gap: 10px; align-items: flex-start;">
+      <div style="flex: 0 0 140px;">
+        <label style="display: block; font-size: 13px; margin: 0 0 6px 0; color: #5f6368; font-weight: 500;">📊 Sheet Row #</label>
+        <input type="number" placeholder="e.g., 25" class="key-case-row-number" min="2" style="width: 100%; padding: 10px; border: 1px solid #dadce0; border-radius: 4px; font-size: 14px;">
+      </div>
+      <div style="flex: 1;">
+        <label style="display: block; font-size: 13px; margin: 0 0 6px 0; color: #5f6368; font-weight: 500;">🎬 Yurt Link</label>
+        <div style="display: flex; gap: 8px;">
+          <input type="text" placeholder="Paste YURT link (will auto-extract video ID)" class="case-id" onblur="extractVideoIdInKeyCase(this)" style="flex: 1; padding: 10px; border: 1px solid #dadce0; border-radius: 4px; font-size: 14px; font-family: monospace;">
+          <button type="button" onclick="fetchAndPopulateAdminData(this)" class="fetch-data-btn" style="background-color: #34a853; color: white; padding: 10px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 13px; white-space: nowrap;">📊 Fetch Data</button>
+        </div>
+      </div>
+    </div>
+    
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; font-size: 13px; margin: 0 0 6px 0; color: #5f6368; font-weight: 500;">📋 Policy Area (Optional)</label>
+      <select class="case-policy-area-select" style="width: 100%; padding: 10px; border: 1px solid #dadce0; border-radius: 4px; font-size: 14px;">
+        <option value="">-- Select Policy Area --</option>
+        ${POLICY_AREAS.map(area => `<option value="${area}">${area}</option>`).join('')}
+      </select>
+    </div>
+    
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; font-size: 13px; margin: 0 0 6px 0; color: #5f6368; font-weight: 500;">❓ Clarification Question (Optional)</label>
+      <textarea class="case-question-input" placeholder="What was the question or clarification needed?" style="width: 100%; padding: 10px; border: 1px solid #dadce0; border-radius: 4px; resize: vertical; min-height: 60px; font-size: 14px;"></textarea>
+    </div>
+    
+    <!-- Hidden metadata fields (populated by Fetch Data) -->
+    <input type="hidden" class="case-metadata-policyid">
+    <input type="hidden" class="case-metadata-timestamp">
+    <input type="hidden" class="case-metadata-whatpart">
+    
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; font-size: 13px; margin: 0 0 6px 0; color: #5f6368; font-weight: 500;">💬 PEM Clarification (from attendee)</label>
+      <textarea class="case-answer-input" placeholder="Response or clarification provided by PEM" style="width: 100%; padding: 10px; border: 1px solid #dadce0; border-radius: 4px; resize: vertical; min-height: 60px; font-size: 14px;"></textarea>
+    </div>
+    
+    <div>
+      <label style="display: block; font-size: 13px; margin: 0 0 6px 0; color: #5f6368; font-weight: 500;">✓ Final Decision</label>
+      <input type="text" placeholder="Final decision or outcome" class="case-decision-input" style="width: 100%; padding: 10px; border: 2px solid #34a853; border-radius: 4px; font-size: 14px; font-weight: 600; background-color: #f1f8f4;">
+    </div>
+  `;
+  container.appendChild(newCase);
+}
+
+// ==================== SHEET DATA FETCH AND AUTO-FILL ====================
+
+function fetchAndPopulateAdminData(button) {
+  const caseRow = button.closest('.case-row');
+  const rowNumberInput = caseRow.querySelector('.key-case-row-number');
+  const rowNumber = rowNumberInput ? rowNumberInput.value : '';
+  
+  if (!rowNumber || rowNumber < 2) {
+    showNotification('Please enter a valid row number (2 or greater)', 'error');
+    return;
+  }
+  
+  // Disable button, input, and show loading
+  const originalText = button.textContent;
+  button.textContent = '⏳ Fetching...';
+  button.disabled = true;
+  if (rowNumberInput) rowNumberInput.disabled = true;
+  
+  google.script.run
+    .withSuccessHandler(function(result) {
+      console.log('📥 Received result from backend:', result);
+      
+      if (result.status === 'success') {
+        const data = result.data;
+        console.log('📊 Data to populate:', data);
+        
+        // 1. Populate Policy Area with fuzzy matching
+        const policyDropdown = caseRow.querySelector('.case-policy-area-select');
+        console.log('🔍 Policy dropdown found:', !!policyDropdown, 'data.policyArea:', data.policyArea);
+        if (policyDropdown && data.policyArea) {
+          // Get all available options
+          const availableOptions = Array.from(policyDropdown.options)
+            .map(opt => opt.value)
+            .filter(val => val); // Remove empty option
+          
+          // Try fuzzy matching on frontend
+          const matchedPolicy = fuzzyMatchPolicyAreaFrontend(data.policyArea, availableOptions);
+          if (matchedPolicy) {
+            policyDropdown.value = matchedPolicy;
+            policyDropdown.style.backgroundColor = '#e6f4ea';
+            setTimeout(() => { policyDropdown.style.backgroundColor = ''; }, 2000);
+          }
+        }
+        
+        // 2. Populate Clarification Question (NO metadata box - just clean text)
+        const questionField = caseRow.querySelector('.case-question-input');
+        if (questionField) {
+          const cleanQuestion = data.detailedQuestion || '';
+          
+          if (cleanQuestion.trim()) {
+            // Convert \n to <br> for contenteditable (preserves line breaks)
+            questionField.innerHTML = cleanQuestion.replace(/\n/g, '<br>');
+            questionField.style.backgroundColor = '#e6f4ea';
+            setTimeout(() => { questionField.style.backgroundColor = ''; }, 2000);
+          }
+        }
+        
+        // Store metadata in hidden fields for email generation
+        const policyIdField = caseRow.querySelector('.case-metadata-policyid');
+        const timestampField = caseRow.querySelector('.case-metadata-timestamp');
+        const whatPartField = caseRow.querySelector('.case-metadata-whatpart');
+        
+        if (policyIdField) policyIdField.value = data.policyId || '';
+        if (timestampField) timestampField.value = data.timestamp || '';
+        if (whatPartField) whatPartField.value = data.whatPart || '';
+        
+        // 3. Populate PEM Clarification (answer field gets PEM Response from sheet)
+        const answerField = caseRow.querySelector('.case-answer-input');
+        if (answerField) {
+          const pemResponseText = data.pemResponse || data.pemSessionDecision || '';
+          if (pemResponseText) {
+            // Convert \n to <br> for contenteditable (preserves line breaks)
+            answerField.innerHTML = pemResponseText.replace(/\n/g, '<br>');
+            answerField.style.backgroundColor = '#e6f4ea';
+            setTimeout(() => { answerField.style.backgroundColor = ''; }, 2000);
+          }
+        }
+        
+        // 4. Populate Final Decision (use policyIdFuture which has the decision number)
+        const decisionField = caseRow.querySelector('.case-decision-input');
+        if (decisionField) {
+          const decision = data.policyIdFuture || '';
+          if (decision) {
+            decisionField.value = decision;
+            decisionField.style.backgroundColor = '#e6f4ea';
+            setTimeout(() => { decisionField.style.backgroundColor = ''; }, 2000);
+          }
+        }
+        
+        // 5. Populate Entity ID if available
+        const videoIdField = caseRow.querySelector('.case-id');
+        if (videoIdField && data.entityId) {
+          if (!videoIdField.value || videoIdField.value.trim() === '') {
+            videoIdField.value = data.entityId;
+            videoIdField.style.backgroundColor = '#fff3cd'; // Yellow for sheet-extracted
+            videoIdField.setAttribute('data-from-sheet', 'true');
+            setTimeout(() => { videoIdField.style.backgroundColor = ''; }, 2500);
+          }
+        }
+        
+        // Show success notification with Entity ID warning if applicable
+        if (data.entityId) {
+          showNotification('Video ID from sheet. No Yurt link. Consider creating a deeplink.', 'info');
+        } else {
+          showNotification('Data populated successfully!', 'success');
+        }
+      } else {
+        showNotification('Error: ' + (result.message || 'Unknown error'), 'error');
+      }
+      
+      // Reset button and input
+      button.textContent = originalText;
+      button.disabled = false;
+      if (rowNumberInput) rowNumberInput.disabled = false;
+    })
+    .withFailureHandler(function(error) {
+      showNotification('Error fetching data: ' + error.message, 'error');
+      button.textContent = originalText;
+      button.disabled = false;
+      if (rowNumberInput) rowNumberInput.disabled = false;
+    })
+    .fetchClarificationData(parseInt(rowNumber));
+}
+
+function fetchAndPopulateSupportData(button) {
+  const caseRow = button.closest('.case-row');
+  const rowNumberInput = caseRow.querySelector('.case-sheet-row-input');
+  const rowNumber = rowNumberInput ? rowNumberInput.value : '';
+  
+  if (!rowNumber || rowNumber < 2) {
+    showNotification('Please enter a valid sheet row number (2 or greater)', 'error');
+    return;
+  }
+  
+  // Disable button, input, and show loading
+  const originalText = button.textContent;
+  button.textContent = '⏳...';
+  button.disabled = true;
+  if (rowNumberInput) rowNumberInput.disabled = true;
+  if (rowNumberInput) rowNumberInput.disabled = true;
+  
+  google.script.run
+    .withSuccessHandler(function(result) {
+      if (result.status === 'success') {
+        const data = result.data;
+        
+        // 1. Populate Policy Area
+        const policyDropdown = caseRow.querySelector('.case-policy-area-select');
+        if (policyDropdown && data.policyArea) {
+          const availableOptions = Array.from(policyDropdown.options)
+            .map(opt => opt.value)
+            .filter(val => val);
+          
+          const matchedPolicy = fuzzyMatchPolicyAreaFrontend(data.policyArea, availableOptions);
+          if (matchedPolicy) {
+            policyDropdown.value = matchedPolicy;
+            policyDropdown.style.backgroundColor = '#e6f4ea';
+            setTimeout(() => { policyDropdown.style.backgroundColor = ''; }, 2000);
+          }
+        }
+        
+        // 2. Populate Question
+        const questionField = caseRow.querySelector('.case-question-input');
+        if (questionField) {
+          const questionParts = [
+            data.whatPart ? `What part: ${data.whatPart}` : '',
+            data.policyId ? `Policy ID: ${data.policyId}` : '',
+            data.timestamp ? `Timestamp: ${data.timestamp}` : '',
+            data.detailedQuestion ? `Question: ${data.detailedQuestion}` : ''
+          ].filter(Boolean);
+          
+          if (questionParts.length > 0) {
+            questionField.value = questionParts.join('\n\n');
+            questionField.style.backgroundColor = '#e6f4ea';
+            setTimeout(() => { questionField.style.backgroundColor = ''; }, 2000);
+          }
+        }
+        
+        // 3. Populate PEM Response
+        const answerField = caseRow.querySelector('.case-answer-input');
+        if (answerField && data.pemResponse) {
+          answerField.value = data.pemResponse;
+          answerField.style.backgroundColor = '#e6f4ea';
+          setTimeout(() => { answerField.style.backgroundColor = ''; }, 2000);
+        }
+        
+        // 4. Populate Final Decision
+        const decisionField = caseRow.querySelector('.case-decision-input');
+        if (decisionField) {
+          const decision = data.policyIdFuture || data.pemSessionDecision || '';
+          if (decision) {
+            decisionField.value = decision;
+            decisionField.style.backgroundColor = '#e6f4ea';
+            setTimeout(() => { decisionField.style.backgroundColor = ''; }, 2000);
+          }
+        }
+        
+        // 5. Populate Entity ID
+        const videoIdField = caseRow.querySelector('.case-id-input');
+        if (videoIdField && data.entityId && !videoIdField.value) {
+          videoIdField.value = data.entityId;
+          videoIdField.style.backgroundColor = '#fff3cd';
+          videoIdField.setAttribute('data-from-sheet', 'true');
+          setTimeout(() => { videoIdField.style.backgroundColor = ''; }, 2000);
+        }
+        
+        // 6. Try to auto-select PEM by LDAP (search in option text/value)
+        const pemDropdown = caseRow.querySelector('.case-clarifying-pem-select');
+        if (pemDropdown && data.pemLdap) {
+          const pemOptions = Array.from(pemDropdown.options);
+          // Search in both option text and value
+          const matchingOption = pemOptions.find(opt => {
+            const optText = opt.textContent.toLowerCase();
+            const optVal = opt.value.toLowerCase();
+            const searchTerm = data.pemLdap.toLowerCase().trim();
+            return optText.includes(searchTerm) || optVal.includes(searchTerm);
+          });
+          
+          if (matchingOption) {
+            pemDropdown.value = matchingOption.value;
+            pemDropdown.style.backgroundColor = '#e6f4ea';
+            setTimeout(() => { pemDropdown.style.backgroundColor = ''; }, 2000);
+          }
+        }
+        
+        // Store metadata in hidden fields for email generation
+        const policyIdField = caseRow.querySelector('.case-metadata-policyid');
+        const timestampField = caseRow.querySelector('.case-metadata-timestamp');
+        const whatPartField = caseRow.querySelector('.case-metadata-whatpart');
+        
+        if (policyIdField) policyIdField.value = data.policyId || '';
+        if (timestampField) timestampField.value = data.timestamp || '';
+        if (whatPartField) whatPartField.value = data.whatPart || '';
+        
+        // Show success notification with Entity ID warning if applicable
+        if (data.entityId) {
+          showNotification('Video ID from sheet. No Yurt link. Consider creating a deeplink.', 'info');
+        } else {
+          showNotification('Data populated successfully!', 'success');
+        }
+      } else {
+        showNotification('Error: ' + (result.message || 'Unknown error'), 'error');
+      }
+      
+      button.textContent = originalText;
+      button.disabled = false;
+      if (rowNumberInput) rowNumberInput.disabled = false;
+    })
+    .withFailureHandler(function(error) {
+      showNotification('Error: ' + error.message, 'error');
+      button.textContent = originalText;
+      button.disabled = false;
+      if (rowNumberInput) rowNumberInput.disabled = false;
+    })
+    .fetchClarificationData(parseInt(rowNumber));
+}
+
+function fuzzyMatchPolicyAreaFrontend(extracted, availableOptions) {
+  if (!extracted) return null;
+  
+  const extractedLower = extracted.toLowerCase().trim();
+  
+  // Exact match
+  for (let option of availableOptions) {
+    if (option.toLowerCase() === extractedLower) return option;
+  }
+  
+  // Partial match
+  for (let option of availableOptions) {
+    const optionLower = option.toLowerCase();
+    if (extractedLower.includes(optionLower) || optionLower.includes(extractedLower)) {
+      return option;
+    }
+  }
+  
+  // Similarity scoring (Dice coefficient)
+  let bestMatch = null;
+  let bestScore = 0;
+  
+  for (let option of availableOptions) {
+    const score = calculateSimilarityFrontend(extractedLower, option.toLowerCase());
+    if (score > bestScore && score > 0.5) {
+      bestScore = score;
+      bestMatch = option;
+    }
+  }
+  
+  return bestMatch;
+}
+
+function calculateSimilarityFrontend(str1, str2) {
+  const bigrams1 = getBigramsFrontend(str1);
+  const bigrams2 = getBigramsFrontend(str2);
+  
+  if (bigrams1.length === 0 || bigrams2.length === 0) return 0;
+  
+  let intersection = 0;
+  for (let bigram of bigrams1) {
+    if (bigrams2.indexOf(bigram) !== -1) intersection++;
+  }
+  
+  return (2.0 * intersection) / (bigrams1.length + bigrams2.length);
+}
+
+function getBigramsFrontend(str) {
+  const bigrams = [];
+  for (let i = 0; i < str.length - 1; i++) {
+    bigrams.push(str.substring(i, i + 2));
+  }
+  return bigrams;
+}
+
+function extractVideoIdInKeyCase(input) {
+  const value = input.value.trim();
+  if (!value) return;
+  
+  // Case 2: Non-Yurt link (YouTube, etc.)
+  if (value.includes('http') && !value.includes('yurt.corp.google.com')) {
+    showNotification('⚠️ This is not a valid Yurt link. Please paste a Yurt URL or enter the video ID directly.', 'error');
+    input.style.borderColor = '#d93025';
+    input.style.backgroundColor = '#fce8e6';
+    setTimeout(() => {
+      input.style.borderColor = '';
+      input.style.backgroundColor = '';
+    }, 3000);
+    return;
+  }
+  
+  // Case 3: Manual ID entry (no http/https)
+  if (!value.includes('http')) {
+    // Pass through silently - assume user entered video ID directly
+    return;
+  }
+  
+  // Case 1: Valid Yurt URL - extract ID
+  if (value.includes('yurt.corp.google.com')) {
+    let extractedId = '';
+    
+    // Method 1: Check for ?q= parameter (encoded deeplink)
+    if (value.includes('?q=')) {
+      try {
+        const urlParts = value.split('?');
+        if (urlParts.length > 1) {
+          const queryString = urlParts[1].split('#')[0];
+          const urlParams = new URLSearchParams(queryString);
+          const qParam = urlParams.get('q');
+          
+          if (qParam) {
+            const decodedData = decodeURIComponent(qParam);
+            const jsonData = atob(decodedData);
+            const parsedData = JSON.parse(jsonData);
+            
+            if (parsedData.entityIds && parsedData.entityIds.length > 0) {
+              extractedId = parsedData.entityIds[0];
+              console.log(`✅ Extracted video ID from deeplink: ${extractedId}`);
+            }
+          }
+        }
+      } catch (e) {
+        console.error('❌ Could not parse encoded deeplink:', e.message);
+      }
+    }
+    
+    // Method 2: Check for entity_id parameter (lookup link)
+    if (!extractedId && value.includes('entity_id=')) {
+      const match = value.match(/entity_id=([^&]+)/);
+      if (match) {
+        extractedId = decodeURIComponent(match[1]);
+        console.log(`✅ Extracted video ID from entity_id: ${extractedId}`);
+        
+        // Show info about lookup link
+        showNotification('ℹ️ Video ID extracted from lookup link. Consider creating a deeplink for better context.', 'info');
+      }
+    }
+    
+    // Update input with extracted ID
+    if (extractedId) {
+      input.value = extractedId;
+      input.setAttribute('data-original-url', value);
+      input.style.backgroundColor = '#e6f4ea';
+      setTimeout(() => {
+        input.style.backgroundColor = '';
+      }, 1500);
+    } else {
+      // Yurt URL but couldn't extract ID
+      showNotification('⚠️ Could not extract video ID from Yurt link. Please check the URL format.', 'error');
+    }
+  }
+}
+
+function renumberKeyCases(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  
+  const cases = container.querySelectorAll('.case-row');
+  cases.forEach((caseRow, index) => {
+    const header = caseRow.querySelector('h4');
+    if (header) {
+      header.textContent = `📌 Key Case #${index + 1}`;
+    }
+  });
+}
+
+function addGoldenSetCaseRow(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    console.error(`Container ${containerId} not found`);
+    return;
+  }
+  
+  const caseNumber = container.children.length + 1;
+  const uniqueId = `golden-set-rationale-${Date.now()}-${caseNumber}`;
+  const newCase = document.createElement('div');
+  newCase.className = 'golden-set-case-row';
+  newCase.style.cssText = 'background: linear-gradient(135deg, #f8f9fa 0%, #e8eaed 100%); border: 2px solid #1a73e8; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(26,115,232,0.15);';
+  
+  newCase.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #1a73e8;">
+      <h4 style="margin: 0; color: #1a73e8; font-size: 16px; font-weight: 600;">📊 Golden Set Case #${caseNumber}</h4>
+      <button type="button" onclick="this.closest('.golden-set-case-row').remove(); renumberGoldenSetCases('${containerId}')" style="background-color: #d93025; color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">✕ Delete</button>
+    </div>
+    
+    <div style="background-color: white; border-radius: 8px; padding: 15px; margin-bottom: 15px; border: 1px solid #dadce0;">
+      <label style="display: block; font-size: 13px; margin: 0 0 8px 0; color: #5f6368; font-weight: 600;">🎬 Video Link or ID</label>
+      <input type="text" placeholder="Paste full Yurt link OR just the video ID (e.g., eJ4jfIYoXyI)" class="golden-set-video-input" onblur="extractVideoIdInGoldenSet(this)" style="width: 100%; padding: 10px; border: 2px solid #dadce0; border-radius: 6px; font-size: 14px; font-family: monospace;">
+      <p style="margin: 5px 0 0 0; font-size: 11px; color: #5f6368;">💡 Paste the full Yurt URL and it will automatically extract the video ID</p>
+    </div>
+    
+    <div style="background-color: white; border-radius: 8px; padding: 15px; margin-bottom: 15px; border: 1px solid #dadce0;">
+      <label style="display: block; font-size: 13px; margin: 0 0 8px 0; color: #5f6368; font-weight: 600;">📋 Policy Area (Optional)</label>
+      <select class="golden-set-policy-select" style="width: 100%; padding: 10px; border: 2px solid #dadce0; border-radius: 6px; font-size: 14px;">
+        <option value="">-- Select Policy Area --</option>
+        <option value="Harmful Substances & Practices">Harmful Substances & Practices</option>
+        <option value="GVM">GVM</option>
+        <option value="Cancer">Cancer</option>
+        <option value="PII EDSA / EDSA">PII EDSA / EDSA</option>
+        <option value="Nicotine and Tobacco">Nicotine and Tobacco</option>
+      </select>
+    </div>
+    
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+      <div style="background-color: #fff3e0; border-radius: 8px; padding: 15px; border: 2px solid #ff9800;">
+        <label style="display: block; font-size: 13px; margin: 0 0 8px 0; color: #e65100; font-weight: 600;">⚠️ Admin Decision</label>
+        <input type="text" placeholder="e.g., 7089" class="golden-set-admin-decision" style="width: 100%; padding: 10px; border: 2px solid #ffb74d; border-radius: 6px; font-size: 14px; font-weight: 600; background-color: white;">
+      </div>
+      <div style="background-color: #e8f5e9; border-radius: 8px; padding: 15px; border: 2px solid #4caf50;">
+        <label style="display: block; font-size: 13px; margin: 0 0 8px 0; color: #2e7d32; font-weight: 600;">✓ Correct Decision</label>
+        <input type="text" placeholder="e.g., 7089" class="golden-set-correct-decision" style="width: 100%; padding: 10px; border: 2px solid #81c784; border-radius: 6px; font-size: 14px; font-weight: 600; background-color: white;">
+      </div>
+    </div>
+    
+    <div style="background-color: white; border-radius: 8px; padding: 15px; border: 1px solid #dadce0;">
+      <label style="display: block; font-size: 13px; margin: 0 0 8px 0; color: #5f6368; font-weight: 600;">📝 Rationale</label>
+      ${createAdminToolbar(uniqueId)}
+      <div id="${uniqueId}" class="rich-text-editor golden-set-rationale" contenteditable="true" data-placeholder="Explain the rationale for this case. You can use formatting, links, and lists." style="min-height: 120px; padding: 12px; border: 2px solid #dadce0; border-radius: 6px; background-color: #fafafa;"></div>
+    </div>
+  `;
+  
+  container.appendChild(newCase);
+  
+  // Initialize rich text editor for the rationale field
+  setTimeout(() => {
+    const rationaleEditor = document.getElementById(uniqueId);
+    if (rationaleEditor) {
+      setupAdminEditorBehavior(rationaleEditor);
+    }
+  }, 50);
+}
+
+function extractVideoIdInGoldenSet(input) {
+  const value = input.value.trim();
+  if (!value) return;
+  
+  // Check if it's a full Yurt URL
+  if (value.includes('yurt.corp.google.com')) {
+    let extractedId = '';
+    
+    // Method 1: Check for ?q= parameter (encoded deeplink)
+    if (value.includes('?q=')) {
+      try {
+        const urlParts = value.split('?');
+        if (urlParts.length > 1) {
+          const queryString = urlParts[1].split('#')[0];
+          const urlParams = new URLSearchParams(queryString);
+          const qParam = urlParams.get('q');
+          
+          if (qParam) {
+            const decodedData = decodeURIComponent(qParam);
+            const jsonData = atob(decodedData);
+            const parsedData = JSON.parse(jsonData);
+            
+            if (parsedData.entityIds && parsedData.entityIds.length > 0) {
+              extractedId = parsedData.entityIds[0];
+              console.log(`✅ Extracted video ID: ${extractedId}`);
+            }
+          }
+        }
+      } catch (e) {
+        console.error('❌ Could not parse encoded deeplink:', e.message);
+      }
+    }
+    
+    // Method 2: Check for entity_id parameter
+    if (!extractedId && value.includes('entity_id=')) {
+      const match = value.match(/entity_id=([^&]+)/);
+      if (match) {
+        extractedId = decodeURIComponent(match[1]);
+        console.log(`✅ Extracted video ID from entity_id: ${extractedId}`);
+      }
+    }
+    
+    // Update input with extracted ID
+    if (extractedId) {
+      input.value = extractedId;
+      input.setAttribute('data-original-url', value);
+      input.style.backgroundColor = '#e6f4ea';
+      setTimeout(() => {
+        input.style.backgroundColor = '';
+      }, 1000);
+    }
+  }
+}
+
+function renumberGoldenSetCases(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  
+  const cases = container.querySelectorAll('.golden-set-case-row');
+  cases.forEach((caseRow, index) => {
+    const header = caseRow.querySelector('h4');
+    if (header) {
+      header.textContent = `📊 Golden Set Case #${index + 1}`;
+    }
+  });
+}
+
+function addAdminCaseRow(containerId, caseType) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const caseDiv = document.createElement('div');
+  caseDiv.className = 'case-row';
+  let content = `<label>Deeplink / Lookup ID / Simple ID</label><input type="text" class="case-id" placeholder="Paste deeplink, lookup, or simple ID (e.g., UC8JWbIwXl-lJNV977u38RJg)" onblur="processAdminCaseId(this)">`;
+  if (caseType === 'calibration') {
+    content += `<label>Analysis</label><div class="rich-text-editor-wrapper">${createAdminToolbar()}<div class="rich-text-editor" contenteditable="true"></div></div>`;
+  } else {
+    content += `<label>FTE Rationale</label><textarea class="case-rationale" rows="4"></textarea><label>Additional Information (Optional)</label><div class="rich-text-editor-wrapper">${createAdminToolbar()}<div class="rich-text-editor" contenteditable="true"></div></div>`;
+  }
+  content += `<button type="button" class="delete-btn" onclick="this.parentElement.remove()">Delete Case</button>`;
+  caseDiv.innerHTML = content;
+  container.appendChild(caseDiv);
+}
+
+// Process and extract ID from deeplink, lookup, or simple ID
+function processAdminCaseId(input) {
+  const value = input.value.trim();
+  if (!value) return;
+  
+  // Check if it's a deeplink with yurt.corp.google.com
+  if (value.includes('yurt.corp.google.com')) {
+    let extractedId = '';
+    
+    // Method 1: Check for ?q= parameter (encoded deeplink) - CHECK THIS FIRST
+    if (value.includes('?q=')) {
+      try {
+        const urlParts = value.split('?');
+        if (urlParts.length > 1) {
+          const queryString = urlParts[1].split('#')[0]; // Remove hash fragment
+          const urlParams = new URLSearchParams(queryString);
+          const qParam = urlParams.get('q');
+          
+          if (qParam) {
+            // Decode the URL-encoded parameter first
+            const decodedData = decodeURIComponent(qParam);
+            // Then decode the base64
+            const jsonData = atob(decodedData);
+            const parsedData = JSON.parse(jsonData);
+            
+            // Extract entity IDs array
+            if (parsedData.entityIds && parsedData.entityIds.length > 0) {
+              extractedId = parsedData.entityIds[0];
+              console.log(`✅ Extracted ID from encoded deeplink (?q=): ${extractedId}`);
+            }
+          }
+        }
+      } catch (e) {
+        console.error('❌ Could not parse encoded deeplink:', e.message);
+        console.log('Trying alternative methods...');
+      }
+    }
+    
+    // Method 2: Check for #deeplink-v2 format (simple deeplink)
+    if (!extractedId && value.includes('#deeplink-v2')) {
+      const parts = value.split('#deeplink-v2');
+      if (parts.length > 1) {
+        extractedId = parts[1].trim().split(/[\s\n]/)[0];
+        if (extractedId) {
+          console.log(`✅ Extracted ID from simple deeplink (#deeplink-v2): ${extractedId}`);
+        }
+      }
+    }
+    
+    // Method 3: Check for entity_id parameter (standard lookup)
+    if (!extractedId && value.includes('entity_id=')) {
+      const match = value.match(/entity_id=([^&]+)/);
+      if (match) {
+        extractedId = decodeURIComponent(match[1]);
+        console.log(`✅ Extracted ID from entity_id parameter: ${extractedId}`);
+      }
+    }
+    
+    // If we extracted an ID, update the input
+    if (extractedId) {
+      input.setAttribute('data-original-deeplink', value);
+      input.setAttribute('data-id-type', 'deeplink');
+      
+      // Highlight the input briefly to show the change
+      input.style.backgroundColor = '#e6f4ea';
+      setTimeout(() => {
+        input.value = extractedId;
+        input.style.backgroundColor = '';
+      }, 100);
+      
+      // Show success notification
+      setTimeout(() => {
+        showNotification(`✅ ID extracted: ${extractedId}`, 'success');
+      }, 200);
+      return;
+    } else {
+      console.warn('⚠️ Could not extract ID from URL, treating as lookup');
+    }
+  }
+  
+  // Check if it's a simple ID (alphanumeric, 15-35 chars typically)
+  if (/^[A-Za-z0-9_-]{15,35}$/.test(value)) {
+    input.setAttribute('data-id-type', 'simple');
+    console.log(`✅ Detected simple ID: ${value}`);
+  }
+  // Otherwise treat as lookup or other format
+  else {
+    input.setAttribute('data-id-type', 'lookup');
+    console.log(`ℹ️ Detected lookup or other format: ${value}`);
+  }
+}
+
+function createAdminToolbar(id) {
+  const editorId = id || `admin-editor-${Date.now()}`;
+  return `
+    <div class="editor-toolbar">
+      <div class="toolbar-group">
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'bold');" class="toolbar-btn" title="Bold"><b>B</b></button>
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'italic');" class="toolbar-btn" title="Italic"><i>I</i></button>
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'underline');" class="toolbar-btn" title="Underline"><u>U</u></button>
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'strikeThrough');" class="toolbar-btn" title="Strikethrough"><s>S</s></button>
+      </div>
+      <span class="toolbar-separator"></span>
+      <div class="toolbar-group">
+        <select onchange="formatAdminDoc('${editorId}', 'fontSize', this.value); this.selectedIndex=0;" class="toolbar-select" title="Font Size">
+          <option value="">Size</option>
+          <option value="1">Small</option>
+          <option value="3">Normal</option>
+          <option value="5">Large</option>
+          <option value="7">Huge</option>
+        </select>
+        <select onchange="formatAdminDoc('${editorId}', 'foreColor', this.value); this.selectedIndex=0;" class="toolbar-select" title="Text Color">
+          <option value="">Color</option>
+          <option value="#000000">Black</option>
+          <option value="#d93025">Red</option>
+          <option value="#1a73e8">Blue</option>
+          <option value="#188038">Green</option>
+          <option value="#f9ab00">Yellow</option>
+          <option value="#9334e6">Purple</option>
+        </select>
+        <select onchange="formatAdminDoc('${editorId}', 'hiliteColor', this.value); this.selectedIndex=0;" class="toolbar-select" title="Background">
+          <option value="">Highlight</option>
+          <option value="#ffff00">Yellow</option>
+          <option value="#00ff00">Green</option>
+          <option value="#00ffff">Cyan</option>
+          <option value="#ff00ff">Pink</option>
+        </select>
+      </div>
+      <span class="toolbar-separator"></span>
+      <div class="toolbar-group">
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'justifyLeft');" class="toolbar-btn" title="Align Left">⬅</button>
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'justifyCenter');" class="toolbar-btn" title="Center">↔</button>
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'justifyRight');" class="toolbar-btn" title="Align Right">➡</button>
+      </div>
+      <span class="toolbar-separator"></span>
+      <div class="toolbar-group">
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'insertUnorderedList');" class="toolbar-btn" title="Bullet List">• List</button>
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'insertOrderedList');" class="toolbar-btn" title="Numbered List">1. List</button>
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'indent');" class="toolbar-btn" title="Indent">→</button>
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'outdent');" class="toolbar-btn" title="Outdent">←</button>
+      </div>
+      <span class="toolbar-separator"></span>
+      <div class="toolbar-group">
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'formatBlock', 'h3');" class="toolbar-btn" title="Heading">H3</button>
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'formatBlock', 'p');" class="toolbar-btn" title="Paragraph">P</button>
+      </div>
+      <span class="toolbar-separator"></span>
+      <div class="toolbar-group">
+        <button type="button" onclick="insertLink()" class="toolbar-btn" title="Insert Link">🔗 Link</button>
+        <button type="button" onclick="insertImage()" class="toolbar-btn" title="Insert Image">🖼️ Image</button>
+      </div>
+      <span class="toolbar-separator"></span>
+      <div class="toolbar-group">
+        <button type="button" onmousedown="event.preventDefault(); formatAdminDoc('${editorId}', 'removeFormat');" class="toolbar-btn" title="Clear">✕ Clear</button>
+      </div>
+    </div>
+  `;
+}
+
+function formatAdminDoc(editorId, command, value = null) {
+  const editor = document.getElementById(editorId);
+  if (!editor) return;
+  editor.focus();
+  document.execCommand(command, false, value);
+  const toolbar = editor.previousElementSibling;
+  if (toolbar && toolbar.querySelector('select')) {
+    toolbar.querySelector('select').selectedIndex = 0;
+  }
+}
+
+function collectAdminFormData() {
+  const workflowName = document.getElementById('admin-workflow-selector').value;
+  const eventDate = new Date(document.getElementById('admin-event-date-picker').value+'T00:00:00').toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit',year:'numeric'});
+  
+  // Find template: use specific one if exists, otherwise use Default
+  let template = APP_DATA.templates.find(t => t.name === workflowName);
+  if (!template) {
+    console.warn(` Template not found for workflow: ${workflowName}, using Default`);
+    template = APP_DATA.templates.find(t => t.name === 'Default');
+  }
+  
+  // Final fallback: create minimal template if neither found
+  if (!template) {
+    console.error(` No template found for ${workflowName} or Default`);
+    template = { name: 'Default', greeting: 'Hello,', intro: 'Meeting summary:', closing: 'Best regards', footer: '© Cognizant' };
+  }
+  
+  const baseData = {
+    workflowName: workflowName,
+    template: template,
+    calendarEvent: { title: SELECTED_EVENT.title, date: document.getElementById('admin-event-date-picker').value },
+    subject: `${SELECTED_EVENT.title} | Summary Template (${eventDate})`
+  };
+
+  if (workflowName === 'SA') {
+    // Collect selected teams for SA
+    const selectedTeams = [];
+    if (document.getElementById('admin-sa-team-msab')?.checked) selectedTeams.push('MSAB');
+    if (document.getElementById('admin-sa-team-impersonation')?.checked) selectedTeams.push('Impersonation Lis');
+    if (document.getElementById('admin-sa-team-civics')?.checked) selectedTeams.push('Civics News');
+    
+    // Validate: At least one team must be selected
+    if (selectedTeams.length === 0) {
+      showNotification('⚠️ Please select at least one Team Selection (MSAB, Impersonation, or Civics)', 'error');
+      return null;
+    }
+    
+    const getStdCases = (cId) => Array.from(document.querySelectorAll(`#${cId} .case-row`)).map(r => {
+      const idInput = r.querySelector('.case-id');
+      return {
+        id: idInput.value,
+        idType: idInput.getAttribute('data-id-type') || 'simple',
+        originalDeeplink: idInput.getAttribute('data-original-deeplink') || '',
+        rationale: r.querySelector('.case-rationale')?.value,
+        additionalInfo: r.querySelector('.rich-text-editor').innerHTML
+      };
+    }).filter(c => c.id);
+    
+    const getCalCases = (cId) => Array.from(document.querySelectorAll(`#${cId} .case-row`)).map(r => {
+      const idInput = r.querySelector('.case-id');
+      return {
+        id: idInput.value,
+        idType: idInput.getAttribute('data-id-type') || 'simple',
+        originalDeeplink: idInput.getAttribute('data-original-deeplink') || '',
+        analysis: r.querySelector('.rich-text-editor').innerHTML
+      };
+    }).filter(c => c.id);
+    
+    return {
+      ...baseData,
+      selectedTeams: selectedTeams,
+      includeManagers: document.getElementById('admin-recipient-managers')?.checked || false,
+      goldenSet: { date: document.getElementById('admin-gs-date').value, preAppeal: document.getElementById('admin-gs-pre-score').value, postAppeal: document.getElementById('admin-gs-post-score').value, optionalComment: document.getElementById('admin-gs-optional-comment').value },
+      fteCases: getStdCases('admin-fte-cases-container'),
+      qaClarification: document.getElementById('admin-qa-clarification').value,
+      fteAnswer: document.getElementById('admin-fte-answer-editor').innerHTML,
+      calibrationCases: getCalCases('admin-cal-cases-container'),
+      additionalMessage: { title: document.getElementById('admin-add-msg-title').value, text: document.getElementById('admin-add-msg-text').innerHTML }
+    };
+  } else if (workflowName === 'MMI') {
+    // For MMI: read from case-row divs and extract video ID from YURT URL
+    const getMMIKeyCases = (cId) => {
+      const container = document.getElementById(cId);
+      if (!container) return [];
+      return Array.from(container.querySelectorAll('.case-row')).map(caseRow => {
+        const idInput = caseRow.querySelector('.case-id');
+        let videoId = idInput?.value || '';
+        let originalUrl = idInput?.getAttribute('data-original-url') || '';
+        
+        // Extract ID from YURT URL if it's a full URL
+        if (videoId.includes('entity_id=')) {
+          const match = videoId.match(/entity_id=([^&]+)/);
+          if (match) {
+            originalUrl = videoId; // Save the full URL before extracting ID
+            videoId = decodeURIComponent(match[1]);
+          }
+        } else if (videoId.includes('yurt.corp.google.com')) {
+          // Other Yurt URL format
+          originalUrl = videoId;
+        }
+        
+        return {
+          id: videoId,
+          originalUrl: originalUrl, // Pass the original URL for hyperlinking
+          policyArea: caseRow.querySelector('.case-policy-area-select')?.value,
+          question: caseRow.querySelector('.case-question-input')?.value,
+          answer: caseRow.querySelector('.case-answer-input')?.value,
+          decision: caseRow.querySelector('.case-decision-input')?.value,
+          policyId: caseRow.querySelector('.case-metadata-policyid')?.value,
+          timestamp: caseRow.querySelector('.case-metadata-timestamp')?.value,
+          whatPart: caseRow.querySelector('.case-metadata-whatpart')?.value
+        };
+      }).filter(c => c.id && c.id.trim() !== '');
+    };
+    
+    // For MMI: read Golden Set Cases
+    const getMMIGoldenSetCases = (cId) => {
+      const container = document.getElementById(cId);
+      if (!container) return [];
+      return Array.from(container.querySelectorAll('.golden-set-case-row')).map(caseRow => {
+        const videoId = caseRow.querySelector('.golden-set-video-input')?.value || '';
+        const originalUrl = caseRow.querySelector('.golden-set-video-input')?.getAttribute('data-original-url') || '';
+        const rationaleEditor = caseRow.querySelector('.golden-set-rationale');
+        
+        return {
+          videoId: videoId,
+          originalUrl: originalUrl,
+          policyArea: caseRow.querySelector('.golden-set-policy-select')?.value,
+          adminDecision: caseRow.querySelector('.golden-set-admin-decision')?.value,
+          correctDecision: caseRow.querySelector('.golden-set-correct-decision')?.value,
+          rationale: rationaleEditor ? rationaleEditor.innerHTML : ''
+        };
+      }).filter(c => c.videoId && c.videoId.trim() !== '');
+    };
+    
+    // Collect selected teams
+    const selectedTeams = [];
+    if (document.getElementById('admin-mmi-team-all')?.checked) selectedTeams.push('All MMI');
+    if (document.getElementById('admin-mmi-team-lisbon')?.checked) selectedTeams.push('Lisbon');
+    if (document.getElementById('admin-mmi-team-krakow')?.checked) selectedTeams.push('Krakow');
+    if (document.getElementById('admin-mmi-team-kl')?.checked) selectedTeams.push('Kuala Lumpur');
+    
+    return {
+      ...baseData,
+      selectedTeams: selectedTeams,
+      includeManagers: document.getElementById('admin-recipient-managers')?.checked || false,
+      goldenSet: { date: document.getElementById('admin-mmi-gs-date').value, preAppeal: document.getElementById('admin-mmi-gs-pre-score').value, postAppeal: document.getElementById('admin-mmi-gs-post-score').value, optionalComment: document.getElementById('admin-mmi-gs-optional-comment').value },
+      whatDiscussed: document.getElementById('admin-mmi-discussed-editor').innerHTML,
+      goldenSetCases: getMMIGoldenSetCases('admin-mmi-golden-set-cases-container'),
+      keyCases: getMMIKeyCases('admin-mmi-key-cases-container'),
+      concerningIssues: document.getElementById('admin-mmi-concerning-issues').value,
+      additionalMessage: { title: document.getElementById('admin-mmi-add-msg-title')?.value || '', text: document.getElementById('admin-mmi-add-msg-text')?.innerHTML || '' }
+    };
+  }
+  return baseData;
+}
+
+function generateAdminPreview() {
+  if (!SELECTED_EVENT.id) { 
+    showNotification("Please select a meeting first.", "error"); 
+    return; 
+  }
+  
+  const formData = collectAdminFormData();
+  
+  // Validation: For MMI workflow, at least one team must be selected
+  if (formData.workflowName === 'MMI') {
+    if (!formData.selectedTeams || formData.selectedTeams.length === 0) {
+      showNotification("Please select at least one team before generating preview.", "error");
+      return;
+    }
+  }
+  
+  document.getElementById('admin-preview-btn').disabled = true;
+  document.getElementById('admin-preview-btn').textContent = 'Generating...';
+  
+  // Get complete recipient info (TO + CC) for all workflows
+  google.script.run.withSuccessHandler(recipientInfo => {
+    console.log('📧 Recipients received:', recipientInfo);
+    
+    // Store formData with recipient lists
+    formDataForEmail = { 
+      ...formData, 
+      recipients: recipientInfo.to,
+      ccList: recipientInfo.cc 
+    };
+    
+    displayRecipientsInPreview(recipientInfo);
+    generateHTMLPreview(formData);
+  }).withFailureHandler(error => {
+    showNotification('Error getting recipients: ' + error.message, 'error');
+    document.getElementById('admin-preview-btn').disabled = false;
+    document.getElementById('admin-preview-btn').textContent = 'Generate Preview';
+  }).getAdminEmailRecipients(formData);
+}
+
+function displayRecipientsInPreview(recipients) {
+  // This now expects recipients object with { to: [], cc: [], totalCount: N }
+  const countText = document.getElementById('admin-recipients-count-text');
+  
+  if (recipients && recipients.totalCount > 0) {
+    const toCount = recipients.to ? recipients.to.length : 0;
+    const ccCount = recipients.cc ? recipients.cc.length : 0;
+    countText.innerHTML = `View Recipients<br><small style="font-size: 11px; opacity: 0.9;">TO: ${toCount} | CC: ${ccCount} (Total: ${recipients.totalCount})</small>`;
+    countText.style.color = 'white';
+  } else if (recipients && recipients.length !== undefined) {
+    // Fallback for old format (just array)
+    countText.textContent = `View ${recipients.length} Recipient${recipients.length !== 1 ? 's' : ''}`;
+    countText.style.color = 'white';
+  } else {
+    countText.textContent = 'No recipients selected';
+    countText.style.color = '#ffcccc';
+  }
+}
+
+// New function to view recipients list (opens modal in view mode)
+function viewRecipientsList() {
+  try {
+    // Check if formDataForEmail exists and has recipients
+    if (!formDataForEmail || !formDataForEmail.recipients) {
+      showNotification('No recipients loaded yet. Please generate the preview first.', 'error');
+      return;
+    }
+    
+    editRecipientsList(); // Reuse the same modal
+  } catch (error) {
+    console.error('Error in viewRecipientsList:', error);
+    showNotification('Error opening recipients list: ' + error.message, 'error');
+  }
+}
+
+function editRecipientsList() {
+  try {
+    const editorList = document.getElementById('admin-recipients-editor-list');
+    
+    if (!editorList) {
+      console.error('admin-recipients-editor-list element not found');
+      showNotification('Error: Modal element not found', 'error');
+      return;
+    }
+    
+    editorList.innerHTML = '';
+    
+    const toRecipients = formDataForEmail.recipients || [];
+    const ccRecipients = formDataForEmail.ccList || [];
+    const totalCount = toRecipients.length + ccRecipients.length;
+    
+    // Update total count
+    const totalCountSpan = document.getElementById('admin-recipients-total-count');
+    if (totalCountSpan) {
+      totalCountSpan.textContent = totalCount;
+    }
+  
+    if (totalCount === 0) {
+      editorList.innerHTML = '<p style="text-align: center; color: #5f6368; padding: 40px; font-size: 14px;">📭 No recipients yet. Add some below.</p>';
+    } else {
+      // TO Recipients Section
+      if (toRecipients.length > 0) {
+        const toSection = document.createElement('div');
+        toSection.style.cssText = 'margin-bottom: 30px;';
+        toSection.innerHTML = `
+          <h4 style="margin: 0 0 15px 0; color: #1a73e8; font-size: 15px; display: flex; align-items: center; gap: 8px; border-bottom: 2px solid #1a73e8; padding-bottom: 8px;">
+            <span style="font-size: 18px;">📨</span> TO Recipients (${toRecipients.length})
+            <span style="font-size: 12px; color: #5f6368; font-weight: normal; margin-left: auto;">Primary recipients - editable</span>
+          </h4>
+        `;
+        
+        toRecipients.forEach((email, index) => {
+          const recipientRow = document.createElement('div');
+          recipientRow.className = 'admin-recipient-row';
+          recipientRow.style.cssText = 'display: flex; align-items: center; gap: 10px; padding: 12px; background-color: white; border-radius: 4px; margin-bottom: 8px; border: 1px solid #e8eaed; transition: background-color 0.2s;';
+          recipientRow.innerHTML = `
+            <span style="flex: 1; color: #202124; font-size: 14px; font-family: monospace;">${email}</span>
+            <button onclick="removeAdminRecipient(${index})" style="background-color: #d93025; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='#b71c1c'" onmouseout="this.style.backgroundColor='#d93025'">✕ Remove</button>
+          `;
+          toSection.appendChild(recipientRow);
+        });
+        
+        editorList.appendChild(toSection);
+      }
+      
+      // CC Recipients Section (Read-only)
+      if (ccRecipients.length > 0) {
+        const ccSection = document.createElement('div');
+        ccSection.style.cssText = 'margin-bottom: 20px;';
+        ccSection.innerHTML = `
+          <h4 style="margin: 0 0 15px 0; color: #34a853; font-size: 15px; display: flex; align-items: center; gap: 8px; border-bottom: 2px solid #34a853; padding-bottom: 8px;">
+            <span style="font-size: 18px;">📧</span> CC Recipients (${ccRecipients.length})
+            <span style="font-size: 12px; color: #5f6368; font-weight: normal; margin-left: auto;">Auto-added: Ops Leads + Support PoCs ${formDataForEmail.includeManagers ? '+ Managers' : ''}</span>
+          </h4>
+        `;
+        
+        ccRecipients.forEach((email) => {
+          const recipientRow = document.createElement('div');
+          recipientRow.style.cssText = 'display: flex; align-items: center; gap: 10px; padding: 12px; background-color: #f8f9fa; border-radius: 4px; margin-bottom: 8px; border: 1px solid #e8eaed;';
+          recipientRow.innerHTML = `
+            <span style="flex: 1; color: #5f6368; font-size: 13px; font-family: monospace;">${email}</span>
+            <span style="background-color: #34a853; color: white; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 500;">AUTO-CC</span>
+          `;
+          ccSection.appendChild(recipientRow);
+        });
+        
+        editorList.appendChild(ccSection);
+      }
+    }
+    
+    // Clear the input field
+    document.getElementById('admin-new-recipient-email').value = '';
+    
+    // Open modal
+    document.getElementById('admin-recipients-editor-modal').style.display = 'block';
+  } catch (error) {
+    console.error('Error in editRecipientsList:', error);
+    showNotification('Error displaying recipients: ' + error.message, 'error');
+  }
+}
+
+function addAdminRecipientToList() {
+  const emailInput = document.getElementById('admin-new-recipient-email');
+  const email = emailInput.value.trim();
+  
+  if (!email) {
+    showNotification('Please enter an email address', 'error');
+    return;
+  }
+  
+  // Basic email validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    showNotification('Please enter a valid email address', 'error');
+    return;
+  }
+  
+  // Check if email already exists
+  if (formDataForEmail.recipients && formDataForEmail.recipients.includes(email)) {
+    showNotification('This email is already in the list', 'warning');
+    return;
+  }
+  
+  // Add to formDataForEmail
+  if (!formDataForEmail.recipients) {
+    formDataForEmail.recipients = [];
+  }
+  formDataForEmail.recipients.push(email);
+  
+  // Refresh the list display
+  editRecipientsList();
+}
+
+function removeAdminRecipient(index) {
+  const email = formDataForEmail.recipients[index];
+  
+  if (formDataForEmail.recipients) {
+    formDataForEmail.recipients.splice(index, 1);
+    
+    // Update the preview button text
+    displayRecipientsInPreview(formDataForEmail.recipients);
+    
+    // Refresh the modal list
+    editRecipientsList();
+    
+    showNotification(`Removed ${email}`, 'success');
+  }
+}
+
+function saveAdminRecipientsFromModal() {
+  // Update the preview display
+  displayRecipientsInPreview(formDataForEmail.recipients);
+  
+  // Close modal
+  closeModal('admin-recipients-editor-modal');
+  
+  showNotification('Recipients updated successfully', 'success');
+}
+
+function generateHTMLPreview(formData) {
+  // Show loading indicator
+  const previewBtn = document.getElementById('admin-preview-btn');
+  previewBtn.disabled = true;
+  previewBtn.textContent = 'Generating...';
+  
+  google.script.run.withSuccessHandler(html => {
+    formDataForEmail = { ...formDataForEmail, ...formData, htmlBody: html };
+    
+    const iframe = document.getElementById('admin-email-preview');
+    const wrapper = document.getElementById('admin-preview-iframe-wrapper');
+    const container = document.getElementById('admin-preview-page-container');
+    
+    // Use srcdoc instead of Blob URL (more reliable in Google Apps Script environment)
+    try {
+      iframe.srcdoc = html;
+      
+      // Wait for iframe to load
+      iframe.onload = function() {
+        // Preview loaded successfully
+      };
+      
+    } catch (e) {
+      console.error('Error setting iframe content:', e);
+    }
+    
+    document.getElementById('main-app').style.display = 'none';
+    document.getElementById('admin-preview-page-container').style.display = 'flex';
+    
+    // Reset button state
+    previewBtn.disabled = false;
+    previewBtn.textContent = 'Generate Preview';
+    
+  }).withFailureHandler(error => {
+    showNotification('Error generating preview: ' + error.message, 'error');
+    previewBtn.disabled = false;
+    previewBtn.textContent = 'Generate Preview';
+    console.error('Preview generation error:', error);
+  }).generateEmailPreview(formData);
+}
+
+// DEBUG: Function to test iframe directly
+function testIframeRendering() {
+  const testHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><div style="background: red; width: 100%; height: 200px; padding: 20px;"><h1>TEST: This should render in RED</h1><p>If you see this, the iframe is working correctly!</p></div></body></html>`;
+  
+  const iframe = document.getElementById('admin-email-preview');
+  iframe.srcdoc = testHtml;
+  
+  alert(' Test HTML set to iframe. Check if red box appears below this message.');
+}
+
+function sendAdminLiveEmail() {
+  if (!formDataForEmail.htmlBody) { 
+    showNotification("Please generate a preview first.", "error"); 
+    return; 
+  }
+  
+  const liveSendBtn = document.getElementById('admin-live-send-btn');
+  const testSendBtn = document.getElementById('admin-test-send-btn');
+  liveSendBtn.disabled = true; 
+  liveSendBtn.textContent = "Sending...";
+  if (testSendBtn) testSendBtn.style.display = 'none';
+  
+  console.log('Sending email with data:', formDataForEmail);
+  
+  google.script.run.withSuccessHandler(response => {
+    console.log('Email sent successfully:', response);
+    showNotification(response, 'success');
+    document.getElementById('admin-final-actions-div').style.display = 'none';
+    document.getElementById('admin-start-over-btn').style.display = 'block';
+  }).withFailureHandler(error => {
+    console.error('Error sending email:', error);
+    showNotification('Error: ' + (error.message || error), 'error');
+    liveSendBtn.disabled = false; 
+    liveSendBtn.textContent = "Send Email";
+    if (testSendBtn) testSendBtn.style.display = 'block';
+  }).sendAdminFinalEmail(formDataForEmail);
+}
+
+function sendAdminTestEmail() {
+  if (!formDataForEmail.htmlBody) { 
+    showNotification("Please generate a preview first.", "error"); 
+    return; 
+  }
+  const recipient = prompt("Enter the test recipient's email address:", "");
+  if (!recipient) return;
+
+  const testSendBtn = document.getElementById('admin-test-send-btn');
+  testSendBtn.disabled = true; 
+  testSendBtn.textContent = "Sending Test...";
+
+  google.script.run.withSuccessHandler(response => {
+    showNotification(response, 'success');
+    testSendBtn.disabled = false; 
+    testSendBtn.textContent = "Send Test Email";
+  }).withFailureHandler(error => {
+    showNotification(error.message, 'error');
+    testSendBtn.disabled = false; 
+    testSendBtn.textContent = "Send Test Email";
+  }).sendAdminTestEmail(formDataForEmail, recipient);
+}
+
+function backToAdminEdit() {
+  document.getElementById('admin-preview-page-container').style.display = 'none';
+  document.getElementById('main-app').style.display = 'block';
+}
+
+function startAdminOver() {
+  formDataForEmail = {};
+  SELECTED_EVENT = {};
+  document.getElementById('admin-preview-page-container').style.display = 'none';
+  document.getElementById('main-app').style.display = 'block';
+  const workflowSelector = document.getElementById('admin-workflow-selector');
+  if(workflowSelector) { 
+    workflowSelector.value = ''; 
+  }
+  const meetingsList = document.getElementById('admin-meetings-list');
+  if(meetingsList) { 
+    meetingsList.innerHTML = ''; 
+  }
+  const datePicker = document.getElementById('admin-event-date-picker');
+  if(datePicker) { 
+    datePicker.value = ''; 
+  }
+  document.getElementById('admin-live-send-btn').disabled = false;
+  document.getElementById('admin-live-send-btn').textContent = 'Send Live Email';
+  document.getElementById('admin-test-send-btn').style.display = 'block';
+  changeAdminSelection();
+}
+
+// Support Functions
+function initializeSupportApp(data) {
+  if (!data || data.error) {
+    console.error(' Support error:', data ? data.error : 'No data');
+    showStatus('Backend Error: ' + (data ? data.error : 'Could not load initial data. Please check that PEM ldaps, POCs, and Managers sheets exist.'), true);
+    SUPPORT_ALL_PEMS = [];
+    SUPPORT_ALL_POCS = [];
+    SUPPORT_ALL_MANAGERS = [];
+    return;
+  }
+
+  SUPPORT_ALL_PEMS = data.pems || [];
+  SUPPORT_ALL_POCS = data.pocs || [];
+  SUPPORT_ALL_MANAGERS = data.managers || [];
+
+  const pemContainer = document.getElementById('support-pem-checkbox-container');
+  if (pemContainer) pemContainer.addEventListener('change', updateSupportClarifyingPemDropdowns);
+
+  const workflowSelect = document.getElementById('support-workflow-select');
+  workflowSelect.addEventListener('change', () => {
+    toggleMMIConfigButton(); // Show/hide MMI config button
+    updateSupportVerticalsDropdown();
+    populateSupportPemCheckboxes(workflowSelect.value);
+  });
+
+  document.querySelectorAll('input[name="support-follow-up"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      document.getElementById('support-follow-up-details').style.display = document.getElementById('support-follow-up-yes').checked ? 'block' : 'none';
+    });
+  });
+
+  document.getElementById('support-form-container').addEventListener('input', saveSupportFormState);
+
+  // Initialize rich text editors for key fields
+  setTimeout(() => {
+    createRichTextEditor('support-gemini-summary', '[Briefly summarize the main points discussed] * [Add any general outcomes or decisions made] - Paste from Gemini here');
+    createRichTextEditor('support-concerning-issues', '[List any specific problems, challenges identified during the discussion]');
+    createRichTextEditor('support-follow-up-context', 'Explain why follow-up is needed and what actions should be taken');
+  }, 100);
+
+  // Initialize with today's date and auto-load events
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('support-event-date-picker').value = today;
+
+  // Auto-load events for today
+  loadSupportEventsForDate();
+
+}
+
+function showStatus(message, isError) {
+  const statusEl = document.getElementById('status');
+  statusEl.textContent = message;
+  statusEl.className = isError ? 'status status-error' : 'status status-success';
+  statusEl.style.display = 'block';
+
+  // Auto-hide success messages after 5 seconds
+  if (!isError) {
+    setTimeout(() => {
+      statusEl.style.display = 'none';
+    }, 5000);
+  }
+}
+
+// Diagnostic function to check app initialization
+function runDiagnostics() {
+  console.log(' Diagnostics:');
+  console.log('- Admin:', APP_DATA && APP_DATA.workflows ? APP_DATA.workflows.length : 0, 'workflows');
+  console.log('- Support:', SUPPORT_ALL_PEMS.length, 'PEMs,', SUPPORT_ALL_POCS.length, 'POCs');
+
+  const status = [];
+  if (APP_DATA && APP_DATA.workflows && APP_DATA.workflows.length > 0) status.push('Admin OK');
+  if (SUPPORT_ALL_PEMS.length > 0) status.push('Support OK');
+  if (status.length === 0) status.push('No data loaded');
+
+  showStatus(`Status: ${status.join(', ')}`, status.length === 0);
+}
+
+// Expose diagnostic function globally
+window.runDiagnostics = runDiagnostics;
+
+function checkDuplicateCaseIds(currentRow) {
+  const allRows = document.querySelectorAll('#support-key-cases-container .case-row, #admin-key-cases-container .case-row');
+  const currentId = currentRow.querySelector('.case-id-input')?.value.trim().toLowerCase();
+  
+  if (!currentId || currentId.length === 0) return;
+  
+  const duplicates = [];
+  allRows.forEach((row, index) => {
+    if (row === currentRow) return;
+    const id = row.querySelector('.case-id-input')?.value.trim().toLowerCase();
+    if (id === currentId) {
+      duplicates.push(index + 1);
+    }
+  });
+  
+  // Find or create warning element
+  let warningEl = currentRow.querySelector('.duplicate-warning');
+  
+  if (duplicates.length > 0) {
+    if (!warningEl) {
+      warningEl = document.createElement('div');
+      warningEl.className = 'duplicate-warning';
+      warningEl.style.cssText = 'color: #f9ab00; font-size: 12px; margin-top: 5px; font-weight: 500;';
+      currentRow.querySelector('.case-id-input').parentElement.appendChild(warningEl);
+    }
+    warningEl.innerHTML = `⚠️ This Video ID already exists in Case #${duplicates.join(', #')}`;
+  } else if (warningEl) {
+    warningEl.remove();
+  }
+}
+
+function saveSupportFormState() {
+  const form = document.getElementById('support-form-container');
+  if (!form || form.style.display === 'none') return;
+  
+  lastSaveTime = Date.now();
+  const data = {
+    eventId: document.getElementById('support-event-id-input').value,
+    formHeader: document.getElementById('support-form-header').textContent,
+    workflow: document.getElementById('support-workflow-select').value,
+    vertical: document.getElementById('support-vertical-select').value,
+    recipients: { pocs: document.getElementById('support-recipient-pocs').checked, managers: document.getElementById('support-recipient-managers').checked },
+    selectedPems: Array.from(document.querySelectorAll('#support-pem-checkbox-container input:checked')).map(cb => cb.value),
+    geminiSummary: document.getElementById('support-gemini-summary').value,
+    concerningIssues: document.getElementById('support-concerning-issues').value,
+    followUp: document.querySelector('input[name="support-follow-up"]:checked')?.value,
+    followUpContext: document.getElementById('support-follow-up-context').value,
+    keyCases: Array.from(document.querySelectorAll('#support-key-cases-container .case-row')).map(row => ({ 
+      row: row.querySelector('.case-row-input').value, 
+      id: row.querySelector('.case-id-input').value, 
+      policyArea: row.querySelector('.case-policy-area-select').value, 
+      question: row.querySelector('.case-question-input').value, 
+      clarifyingPem: row.querySelector('.case-clarifying-pem-select').value, 
+      answer: row.querySelector('.case-answer-input').value, 
+      decision: row.querySelector('.case-decision-input').value,
+      policyId: row.querySelector('.case-metadata-policyid')?.value,
+      timestamp: row.querySelector('.case-metadata-timestamp')?.value,
+      whatPart: row.querySelector('.case-metadata-whatpart')?.value
+    }))
+  };
+  localStorage.setItem('supportFormState', JSON.stringify(data));
+}
+
+function clearSupportFormAndReturn() {
+  localStorage.removeItem('supportFormState');
+  document.getElementById('support-form-container').style.display = 'none';
+  document.getElementById('support-preview-container').style.display = 'none';
+  document.getElementById('support-meetings-list').style.display = 'block';
+  const form = document.getElementById('support-form-container');
+  form.querySelectorAll('input[type="text"], input[type="number"], input[type="email"], textarea, select').forEach(input => input.value = '');
+  form.querySelectorAll('input[type="checkbox"], input[type="radio"]').forEach(input => input.checked = false);
+  document.getElementById('support-key-cases-container').innerHTML = '';
+  document.getElementById('support-recipient-pocs').checked = true;
+  document.getElementById('support-follow-up-no').checked = true;
+  showStatus('Form cleared.', false);
+}
+
+function loadSupportEventsForDate() {
+  const dateString = document.getElementById('support-event-date-picker').value;
+  if (!dateString) {
+    showStatus('Please select a date first.', true);
+    return;
+  }
+
+  document.getElementById('support-meetings-list').innerHTML = '<p>Loading meetings...</p>';
+  showStatus('Loading meetings...', false);
+
+  google.script.run
+    .withSuccessHandler(displaySupportMeetings)
+    .withFailureHandler(err => {
+      console.error(' Failed to load meetings:', err);
+      showStatus('Failed to load meetings: ' + err.message, true);
+      document.getElementById('support-meetings-list').innerHTML = '<p>Failed to load meetings. Please try again.</p>';
+    })
+    .getEventsForDate(dateString);
+}
+
+function displaySupportMeetings(meetings) {
+  const list = document.getElementById('support-meetings-list');
+  if (!list) {
+    console.error('Fatal Error: support-meetings-list element not found.');
+    showStatus('Page Error: UI element missing.', true);
+    return;
+  }
+  list.innerHTML = '';
+  if (!meetings || meetings.length === 0) {
+    list.innerHTML = '<p>No meetings found for this date.</p>';
+    return;
+  }
+  meetings.forEach(m => {
+    const item = document.createElement('div');
+    item.className = 'meeting-item';
+    const textSpan = document.createElement('span');
+    const timeStrong = document.createElement('strong');
+    timeStrong.textContent = m.time;
+    textSpan.appendChild(timeStrong);
+    textSpan.appendChild(document.createTextNode(` - ${m.title}`));
+    const selectButton = document.createElement('button');
+    selectButton.textContent = 'Select';
+    selectButton.onclick = function() {
+      selectSupportMeeting(m.id, m.title);
+    };
+    item.appendChild(textSpan);
+    item.appendChild(selectButton);
+    list.appendChild(item);
+  });
+  showStatus('', false);
+}
+
+function selectSupportMeeting(id, title) {
+  clearSupportFormAndReturn();
+  document.getElementById('support-meetings-list').style.display = 'none';
+  document.getElementById('support-form-container').style.display = 'block';
+  document.getElementById('support-form-header').textContent = `Completing Summary for: ${title}`;
+  document.getElementById('support-event-id-input').value = id;
+  showStatus('', false);
+
+  const upperCaseTitle = title.toUpperCase();
+  const workflowSelect = document.getElementById('support-workflow-select');
+  
+  let detectedWorkflow = '';
+  if (upperCaseTitle.includes('GMI')) { detectedWorkflow = 'GMI'; }
+  else if (upperCaseTitle.includes('SA') || upperCaseTitle.includes('SCALED ABUSE')) { detectedWorkflow = 'SA'; }
+  else if (upperCaseTitle.includes('MMI')) { detectedWorkflow = 'MMI'; }
+  
+  if (detectedWorkflow) {
+    workflowSelect.value = detectedWorkflow;
+  }
+
+  toggleMMIConfigButton(); // Show/hide MMI config button based on detected workflow
+  updateSupportVerticalsDropdown();
+  populateSupportPemCheckboxes(detectedWorkflow);
+
+  const verticalSelect = document.getElementById('support-vertical-select');
+  if (detectedWorkflow && supportVerticalsByWorkflow[detectedWorkflow]) {
+    for (const vertical of supportVerticalsByWorkflow[detectedWorkflow]) {
+      if (upperCaseTitle.includes(vertical.abbr.toUpperCase())) {
+        verticalSelect.value = vertical.abbr;
+        break;
+      }
+    }
+  }
+  
+  const savedState = localStorage.getItem('supportFormState');
+  if (savedState) {
+    const data = JSON.parse(savedState);
+    if (data.eventId === id) {
+      console.log("Restoring saved state for this meeting.");
+      setTimeout(() => {
+        if(data.workflow) document.getElementById('support-workflow-select').value = data.workflow;
+        toggleMMIConfigButton(); // Show/hide MMI config button based on workflow
+        updateSupportVerticalsDropdown();
+        if(data.vertical) document.getElementById('support-vertical-select').value = data.vertical;
+        if(data.recipients.pocs) document.getElementById('support-recipient-pocs').checked = data.recipients.pocs;
+        if(data.recipients.managers) document.getElementById('support-recipient-managers').checked = data.recipients.managers;
+        populateSupportPemCheckboxes(data.workflow);
+        setTimeout(() => {
+          data.selectedPems.forEach(ldap => {
+            const pemCheckbox = document.getElementById(`support-pem-${ldap}`);
+            if (pemCheckbox) pemCheckbox.checked = true;
+          });
+          updateSupportClarifyingPemDropdowns();
+        }, 100);
+        data.keyCases.forEach(caseData => {
+          addSupportCaseRow(caseData);
+        });
+        document.getElementById('support-gemini-summary').value = data.geminiSummary;
+        document.getElementById('support-concerning-issues').value = data.concerningIssues;
+        if(data.followUp) document.querySelector(`input[name="support-follow-up"][value="${data.followUp}"]`).checked = true;
+        if (data.followUp === 'Yes') {
+          document.getElementById('support-follow-up-details').style.display = 'block';
+          document.getElementById('support-follow-up-context').value = data.followUpContext;
+        }
+      }, 100);
+    }
+  }
+}
+
+function returnToSupportMeetingList() {
+  document.getElementById('support-form-container').style.display = 'none';
+  document.getElementById('support-preview-container').style.display = 'none';
+  document.getElementById('support-meetings-list').style.display = 'block';
+  toggleMMIConfigButton(); // Hide MMI config button when returning to list
+  showStatus('Please select a different event.', false);
+}
+
+function updateSupportVerticalsDropdown() {
+  const workflowSelect = document.getElementById('support-workflow-select');
+  const verticalSelect = document.getElementById('support-vertical-select');
+  const selectedWorkflow = workflowSelect.value;
+
+  verticalSelect.innerHTML = '<option value="">Select Vertical (Optional)</option>';
+  verticalSelect.disabled = true;
+
+  if (selectedWorkflow && supportVerticalsByWorkflow[selectedWorkflow]) {
+    const verticals = supportVerticalsByWorkflow[selectedWorkflow];
+    if (verticals.length > 0) {
+      verticals.forEach(v => {
+        verticalSelect.innerHTML += `<option value="${v.abbr}">${v.name}</option>`;
+      });
+      verticalSelect.disabled = false;
+    } else {
+      verticalSelect.innerHTML = '<option value="">(No verticals for this workflow)</option>';
+    }
+  }
+}
+
+function populateSupportPemCheckboxes(workflow) { 
+  const container = document.getElementById('support-pem-checkbox-container'); 
+  container.innerHTML = ''; 
+  if (!workflow) return; 
+  const filteredPems = SUPPORT_ALL_PEMS.filter(pem => (pem.workflow || '').toUpperCase().split(',').map(w => w.trim()).includes(workflow.toUpperCase())); 
+  if (filteredPems.length === 0) { 
+    container.innerHTML = `<p style="color: #5f6368;">No attendees configured for ${workflow} workflow.</p>`; 
+  } else { 
+    filteredPems.forEach(pem => { container.innerHTML += `<div class="option-item"><input type="checkbox" id="support-pem-${pem.ldap}" value="${pem.ldap}"><label for="support-pem-${pem.ldap}">${pem.fullName}</label></div>`; }); 
+  } 
+  updateSupportClarifyingPemDropdowns();
+}
+
+function updateSupportClarifyingPemDropdowns() { 
+  const selectedPems = Array.from(document.querySelectorAll('#support-pem-checkbox-container input:checked')).map(cb => ({ ldap: cb.value, name: cb.nextElementSibling.textContent })); 
+  const dropdowns = document.querySelectorAll('#support-key-cases-container .case-clarifying-pem-select'); 
+  dropdowns.forEach(select => { 
+    const currentValue = select.value; 
+    select.innerHTML = '<option value="">(Optional) Select PEM</option>'; 
+    selectedPems.forEach(pem => { 
+      const option = document.createElement('option'); 
+      option.value = pem.ldap; 
+      option.textContent = pem.name; 
+      select.appendChild(option); 
+    }); 
+    select.value = currentValue; 
+  }); 
+}
+
+function addSupportCaseRow(caseData = {}) {
+  const container = document.getElementById('support-key-cases-container');
+  const newCase = document.createElement('div');
+  newCase.className = 'case-row';
+  newCase.innerHTML = `<div><div style="display:flex; gap:10px; align-items:center; margin-bottom: 8px;"><input type="number" placeholder="Sheet Row Nr." class="case-sheet-row-input" style="width: 15%; min-width: 100px;" value="${caseData.sheetRow || ''}" min="2"><input type="text" placeholder="Video ID" class="case-id-input" style="flex: 1;" value="${caseData.id || ''}"><button type="button" onclick="fetchAndPopulateSupportData(this)" class="fetch-data-btn" style="background-color:#34a853; color: white; padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;">📊 Fetch</button><button type="button" onclick="this.closest('.case-row').remove()" style="background-color:#d93025; padding: 8px 12px; margin:0;">Delete</button></div><div style="margin-top: 8px;"><label style="font-size: 13px; margin:0; color:#5f6368;">Policy Area (Optional)</label><select class="case-policy-area-select" style="padding: 8px; margin-top: 2px;"><option value="">(Select Policy Area)</option>${POLICY_AREAS.map(area => `<option value="${area}">${area}</option>`).join('')}</select></div><textarea class="case-question-input" placeholder="Clarification Question (optional)" style="margin-top: 8px;">${caseData.question || ''}</textarea><div style="margin-top: 8px;"><label style="font-size: 13px; margin:0; color:#5f6368;">PEM Clarification (from an attendee)</label><select class="case-clarifying-pem-select" style="padding: 8px; margin-top: 2px;"><option value="">(Optional) Select PEM</option></select><textarea class="case-answer-input" placeholder="Enter clarification text" style="margin-top: 2px;">${caseData.answer || ''}</textarea></div><input type="text" placeholder="Final Decision" class="case-decision-input" style="margin-top: 8px; font-weight: bold;" value="${caseData.decision || ''}"></div>`;
+  container.appendChild(newCase);
+  newCase.querySelector('.case-policy-area-select').value = caseData.policyArea || '';
+  newCase.querySelector('.case-clarifying-pem-select').value = caseData.clarifyingPem || '';
+  updateSupportClarifyingPemDropdowns();
+}
+
+function toggleSplitScreenMode() {
+  isSplitScreenMode = !isSplitScreenMode;
+  const formContainer = document.getElementById('support-form-container');
+  const previewContainer = document.getElementById('support-preview-container');
+  const toggleBtn = document.getElementById('split-screen-toggle-btn');
+  
+  if (isSplitScreenMode) {
+    // Split screen: show both side by side
+    formContainer.style.width = '48%';
+    formContainer.style.display = 'inline-block';
+    formContainer.style.verticalAlign = 'top';
+    formContainer.style.marginRight = '2%';
+    
+    previewContainer.style.width = '48%';
+    previewContainer.style.display = 'inline-block';
+    previewContainer.style.verticalAlign = 'top';
+    
+    if (toggleBtn) toggleBtn.textContent = '📄 Full Screen';
+  } else {
+    // Full screen: hide form, show preview only
+    formContainer.style.width = '';
+    formContainer.style.display = 'none';
+    formContainer.style.marginRight = '';
+    
+    previewContainer.style.width = '';
+    previewContainer.style.display = 'block';
+    
+    if (toggleBtn) toggleBtn.textContent = '📝 Show Form';
+  }
+}
+
+function generateSupportPreview() {
+  console.log('🔍 generateSupportPreview called');
+  const previewBtn = document.getElementById('support-preview-btn');
+  const originalText = previewBtn.textContent;
+  previewBtn.disabled = true; 
+  previewBtn.innerHTML = '<span style="display: inline-flex; align-items: center; gap: 8px;"><span class="spinner"></span> Generating Preview...</span>';
+  
+  const formData = collectSupportFormData();
+  if (!formData) {
+    console.log('❌ Form validation failed');
+    previewBtn.disabled = false; 
+    previewBtn.innerHTML = originalText;
+    return;
+  }
+  
+  console.log('✅ Form data collected:', formData);
+  supportFullFormData = formData;
+  
+  try {
+    saveSupportFormState();
+    console.log('✅ Form state saved');
+  } catch (saveError) {
+    console.warn('⚠️ Error saving form state (non-critical):', saveError);
+  }
+  
+  console.log('🚀 Calling backend getHtmlPreview...');
+  console.log('📧 Recipients configuration:', JSON.stringify(supportFullFormData.recipients, null, 2));
+  if (supportFullFormData.recipients.opsLeads) {
+    console.log('✅ Ops Leads ENABLED for:', supportFullFormData.workflow + ' - ' + supportFullFormData.vertical);
+    console.log('⚠️ Check Apps Script Logs to see which Ops Leads were added to CC');
+  }
+  
+  google.script.run.withSuccessHandler(html => {
+    console.log('✅ Preview HTML received, length:', html ? html.length : 0);
+    console.log('📄 Updating DOM elements...');
+    
+    try {
+      const formContainer = document.getElementById('support-form-container');
+      const previewIframe = document.getElementById('support-email-preview');
+      const previewContainer = document.getElementById('support-preview-container');
+      
+      console.log('Form container:', formContainer ? 'found' : 'NOT FOUND');
+      console.log('Preview iframe:', previewIframe ? 'found' : 'NOT FOUND');
+      console.log('Preview container:', previewContainer ? 'found' : 'NOT FOUND');
+      
+      // Show in full-screen mode by default (split-screen available via button)
+      isSplitScreenMode = false;
+      formContainer.style.width = '';
+      formContainer.style.display = 'none';
+      formContainer.style.verticalAlign = '';
+      formContainer.style.marginRight = '';
+      
+      previewIframe.srcdoc = html;
+      previewContainer.style.width = '';
+      previewContainer.style.display = 'block';
+      previewContainer.style.verticalAlign = '';
+      
+      console.log('✅ Preview displayed successfully');
+    } catch (domError) {
+      console.error('❌ DOM manipulation error:', domError);
+    }
+    
+    previewBtn.disabled = false; 
+    previewBtn.innerHTML = originalText;
+  }).withFailureHandler(err => {
+    console.error('❌ Preview generation failed:', err);
+    showStatus('Error generating preview: ' + err.message, true);
+    showNotification('Error generating preview: ' + err.message, 'error');
+    previewBtn.disabled = false; 
+    previewBtn.innerHTML = originalText;
+  }).getHtmlPreview(supportFullFormData);
+}
+
+// Expose globally for onclick
+window.generateSupportPreview = generateSupportPreview;
+
+function collectSupportFormData() {
+  console.log('📋 Collecting Support form data...');
+  const keyCases = Array.from(document.querySelectorAll('#support-key-cases-container .case-row')).map(row => ({ 
+    row: row.querySelector('.case-sheet-row-input')?.value || '',
+    id: row.querySelector('.case-id-input').value, 
+    policyArea: row.querySelector('.case-policy-area-select').value, 
+    question: row.querySelector('.case-question-input').value, 
+    clarifyingPem: row.querySelector('.case-clarifying-pem-select').value, 
+    answer: row.querySelector('.case-answer-input').value, 
+    decision: row.querySelector('.case-decision-input').value,
+    policyId: row.querySelector('.case-metadata-policyid')?.value,
+    timestamp: row.querySelector('.case-metadata-timestamp')?.value,
+    whatPart: row.querySelector('.case-metadata-whatpart')?.value 
+  })).filter(c => c.id); 
+  
+  const eventDateInput = document.getElementById('support-event-date-picker');
+  const eventDate = eventDateInput ? eventDateInput.value : '';
+  const eventIdInput = document.getElementById('support-event-id-input');
+  const eventId = eventIdInput ? eventIdInput.value : '';
+  const workflowInput = document.getElementById('support-workflow-select');
+  const workflow = workflowInput ? workflowInput.value : '';
+  
+  console.log('Event ID:', eventId, 'Workflow:', workflow, 'Date:', eventDate);
+  
+  const formData = {
+    eventId: eventId,
+    eventDate: eventDate,
+    workflow: workflow,
+    vertical: document.getElementById('support-vertical-select')?.value || '',
+    recipients: { 
+      pocs: document.getElementById('support-recipient-pocs')?.checked || false, 
+      managers: document.getElementById('support-recipient-managers')?.checked || false,
+      opsLeads: document.getElementById('support-recipient-opsleads')?.checked || false
+    },
+    selectedPems: Array.from(document.querySelectorAll('#support-pem-checkbox-container input:checked')).map(cb => cb.value),
+    geminiSummary: getEditorContent('support-gemini-summary'),
+    keyCases: keyCases,
+    concerningIssues: getEditorContent('support-concerning-issues'),
+    followUp: document.querySelector('input[name="support-follow-up"]:checked')?.value || 'No',
+    followUpContext: getEditorContent('support-follow-up-context'),
+    subject: `${workflow} Summary - ${eventDate}`
+  };
+
+  if (!formData.eventId || !formData.workflow) { 
+    console.log('❌ Validation failed: Missing eventId or workflow');
+    showNotification('Please select a meeting and a workflow.', 'error'); 
+    return null;
+  }
+  
+  if (!formData.eventDate) {
+    console.log('❌ Validation failed: Missing eventDate');
+    showNotification('Please select an event date.', 'error'); 
+    return null;
+  }
+  
+  // Validate: At least one PEM (Team Selection) must be selected
+  if (!formData.selectedPems || formData.selectedPems.length === 0) {
+    console.log('❌ Validation failed: No PEMs selected');
+    showNotification('⚠️ Please select at least one Team Member from Team Selection.', 'error');
+    return null;
+  }
+  
+  console.log('✅ Validation passed');
+  return formData;
+}
+
+function goBackToSupportEdit() {
+  // Reset split-screen mode
+  isSplitScreenMode = false;
+  const formContainer = document.getElementById('support-form-container');
+  const previewContainer = document.getElementById('support-preview-container');
+  
+  formContainer.style.width = '';
+  formContainer.style.display = 'block';
+  formContainer.style.verticalAlign = '';
+  formContainer.style.marginRight = '';
+  
+  previewContainer.style.width = '';
+  previewContainer.style.display = 'none';
+  previewContainer.style.verticalAlign = '';
+}
+
+function sendSupportEmail() {
+  const sendBtn = document.getElementById('support-send-btn');
+  sendBtn.disabled = true;
+  sendBtn.textContent = 'Sending...';
+  google.script.run.withSuccessHandler(msg => {
+    showStatus(msg, false);
+    sendBtn.textContent = 'Email Sent!';
+    document.getElementById('support-edit-btn').style.display = 'none';
+    localStorage.removeItem('supportFormState');
+  }).withFailureHandler(err => {
+    showStatus('Error sending email: ' + err.message, true);
+    sendBtn.disabled = false;
+    sendBtn.textContent = 'Send Email';
+  }).sendFinalEmail(supportFullFormData);
+}
+
+// Modal functions
+function closeModal(modalId) { 
+  document.getElementById(modalId).style.display = 'none'; 
+}
+
+function openTestEmailModal() {
+  // Verify that Admin form has minimum required data
+  const workflow = document.getElementById('admin-workflow-selector')?.value;
+  
+  if (!workflow) {
+    showNotification('❌ Please select a workflow first', 'error');
+    return;
+  }
+  
+  console.log('✅ Opening Admin test email modal...');
+  
+  // Open modal
+  const modal = document.getElementById('test-email-modal');
+  if (modal) {
+    modal.style.display = 'block';
+    const ldapInput = document.getElementById('test-email-ldap');
+    if (ldapInput) {
+      ldapInput.value = '';
+      ldapInput.focus();
+    }
+  } else {
+    console.error('❌ Test email modal not found in DOM');
+    showNotification('Error: Test email modal not found', 'error');
+  }
+}
+
+function openSupportTestEmailModal() {
+  // Verify that Support form has minimum required data
+  const eventId = document.getElementById('support-event-id-input')?.value;
+  const workflow = document.getElementById('support-workflow-select')?.value;
+  
+  if (!eventId) {
+    showNotification('❌ Please select an event first', 'error');
+    return;
+  }
+  
+  if (!workflow) {
+    showNotification('❌ Please select a workflow first', 'error');
+    return;
+  }
+  
+  console.log('✅ Opening Support test email modal...');
+  
+  // Open modal
+  const modal = document.getElementById('test-email-modal');
+  if (modal) {
+    modal.style.display = 'block';
+    const ldapInput = document.getElementById('test-email-ldap');
+    if (ldapInput) {
+      ldapInput.value = '';
+      ldapInput.focus();
+    }
+  } else {
+    console.error('❌ Test email modal not found in DOM');
+    showNotification('Error: Test email modal not found', 'error');
+  }
+}
+
+function sendTestEmail() {
+  const ldap = document.getElementById('test-email-ldap').value.trim();
+  
+  if (!ldap) {
+    showNotification('Please enter an LDAP', 'error');
+    return;
+  }
+  
+  // Determine if Admin or Support based on visible sections
+  const adminSection = document.getElementById('admin-section');
+  const supportSection = document.getElementById('support-section');
+  
+  // Check which section is visible (not display:none)
+  const adminVisible = adminSection && window.getComputedStyle(adminSection).display !== 'none';
+  const supportVisible = supportSection && window.getComputedStyle(supportSection).display !== 'none';
+  
+  let formData;
+  let functionName;
+  
+  if (adminVisible) {
+    console.log('📧 Sending Admin test email...');
+    formData = collectAdminFormData();
+    if (!formData) {
+      showNotification('Failed to collect Admin form data. Please complete the form first.', 'error');
+      return;
+    }
+    functionName = 'sendAdminTestEmail';
+  } else if (supportVisible) {
+    console.log('📧 Sending Support test email...');
+    formData = collectSupportFormData();
+    if (!formData) {
+      showNotification('Failed to collect Support form data. Please complete the form first.', 'error');
+      return;
+    }
+    functionName = 'sendSupportTestEmail';
+  } else {
+    console.error('❌ No active section detected');
+    showNotification('Unable to determine active section. Please switch to Admin or Support tab first.', 'error');
+    return;
+  }
+  
+  // Show loading on the send button
+  const sendBtn = document.querySelector('#test-email-modal button[onclick="sendTestEmail()"]');
+  if (sendBtn) {
+    const originalText = sendBtn.innerHTML;
+    sendBtn.innerHTML = '<span style="display: inline-flex; align-items: center; gap: 8px;"><span class="spinner"></span> Sending...</span>';
+    sendBtn.disabled = true;
+    
+    // Send test email
+    google.script.run
+      .withSuccessHandler(() => {
+        sendBtn.innerHTML = originalText;
+        sendBtn.disabled = false;
+        closeModal('test-email-modal');
+        showNotification(`✅ Test email sent to ${ldap}@google.com`, 'success');
+      })
+      .withFailureHandler((error) => {
+        sendBtn.innerHTML = originalText;
+        sendBtn.disabled = false;
+        console.error('❌ Test email error:', error);
+        showNotification('Failed to send test email: ' + error.message, 'error');
+      })
+      [functionName](formData, ldap);
+  }
+}
+
+window.onclick = function(event) { 
+  if (event.target.classList.contains('modal')) { 
+    event.target.style.display = "none"; 
+  } 
+}
+
+// Update test email preview when typing
+document.addEventListener('DOMContentLoaded', () => {
+  const ldapInput = document.getElementById('test-email-ldap');
+  if (ldapInput) {
+    ldapInput.addEventListener('input', (e) => {
+      const preview = document.getElementById('test-email-preview');
+      if (preview) {
+        preview.textContent = e.target.value ? `${e.target.value}@google.com` : 'jdoe@google.com';
+      }
+    });
+  }
+});
+
+// Notification
+function showNotification(message, type) {
+  const toast = document.getElementById('notification-toast');
+  toast.innerHTML = `
+    <div style="flex: 1;">${message}</div>
+    <div class="notification-progress"></div>
+  `;
+  toast.className = '';
+  toast.classList.add('notification-toast');
+  toast.classList.add(type);
+  toast.classList.add('show');
+  
+  // Remove after 3 seconds with progress bar animation
+  setTimeout(() => { toast.classList.remove('show'); }, 3000);
+}
+
+// PEM Management Functions
+function loadSupportPemList() {
+  const editor = document.getElementById('support-pem-list-editor');
+  editor.innerHTML = `<div class="recipient-editor-row" style="font-weight:bold; grid-template-columns: 1fr 1fr 1fr auto;">
+      <div>LDAP</div><div>Full Name</div><div>Workflows</div><div></div>
+  </div>`;
+  SUPPORT_ALL_PEMS.forEach((pem) => {
+      editor.innerHTML += `<div class="recipient-editor-row" style="grid-template-columns: 1fr 1fr 1fr auto;">
+          <input type="text" value="${pem.ldap || ''}">
+          <input type="text" value="${pem.fullName || ''}">
+          <input type="text" value="${pem.workflow || ''}">
+          <button onclick="this.parentElement.remove()" style="background-color:#d93025;">X</button>
+      </div>`;
+  });
+  document.getElementById('support-pem-manager-modal').style.display = 'block';
+}
+
+function addSupportPemToList() {
+    const ldap = document.getElementById('support-new-pem-ldap').value.trim();
+    const name = document.getElementById('support-new-pem-name').value.trim();
+    const workflow = document.getElementById('support-new-pem-workflow').value.trim();
+    if (ldap && name && workflow) {
+        const editor = document.getElementById('support-pem-list-editor');
+        const newRowHTML = `<div class="recipient-editor-row" style="grid-template-columns: 1fr 1fr 1fr auto;">
+            <input type="text" value="${ldap}">
+            <input type="text" value="${name}">
+            <input type="text" value="${workflow}">
+            <button onclick="this.parentElement.remove()" style="background-color:#d93025;">X</button>
+        </div>`;
+        editor.insertAdjacentHTML('beforeend', newRowHTML);
+        document.getElementById('support-new-pem-ldap').value = '';
+        document.getElementById('support-new-pem-name').value = '';
+        document.getElementById('support-new-pem-workflow').value = '';
+    } else {
+        alert('Please fill all three fields.');
+    }
+}
+
+function saveSupportPems() {
+    const updatedPems = [];
+    document.querySelectorAll('#support-pem-list-editor .recipient-editor-row:not([style*="font-weight:bold"])').forEach(row => {
+        const inputs = row.querySelectorAll('input');
+        const ldap = inputs[0].value;
+        const name = inputs[1].value;
+        const workflow = inputs[2].value;
+        if (ldap && name && workflow) {
+            updatedPems.push({ ldap: ldap, fullName: name, workflow: workflow });
+        }
+    });
+    showStatus('Saving...', false);
+    google.script.run.withSuccessHandler(pems => {
+        SUPPORT_ALL_PEMS = pems;
+        const currentWorkflow = document.getElementById('support-workflow-select').value;
+        if (currentWorkflow) {
+            populateSupportPemCheckboxes(currentWorkflow);
+        }
+        closeModal('support-pem-manager-modal');
+        showStatus('Attendees saved successfully!', false);
+    }).withFailureHandler(err => showStatus('Error saving: ' + err.message, true)).savePemsToSheet(updatedPems);
+}
+
+// PoC and Manager Management Functions
+function loadSupportPocList() {
+  const pocEditor = document.getElementById('support-poc-list-editor');
+  pocEditor.innerHTML = `<div class="recipient-editor-row" style="font-weight:bold;">
+      <div>Email</div>
+      <div>Workflows</div>
+      <div>Verticals</div>
+      <div></div>
+  </div>`;
+  SUPPORT_ALL_POCS.forEach(p => {
+      pocEditor.innerHTML += `<div class="recipient-editor-row">
+          <input value="${p.email || ''}" class="poc-edit-email">
+          <input value="${p.workflow || ''}" class="poc-edit-workflow">
+          <input value="${p.vertical || ''}" class="poc-edit-vertical">
+          <button onclick="this.parentElement.remove()" style="background-color:#d93025;">X</button>
+      </div>`;
+  });
+
+  const managerEditor = document.getElementById('support-manager-list-editor');
+  managerEditor.innerHTML = `<div class="recipient-editor-row manager-row" style="font-weight:bold;">
+      <div>Email</div>
+      <div></div>
+  </div>`;
+  SUPPORT_ALL_MANAGERS.forEach(m => {
+      managerEditor.innerHTML += `<div class="recipient-editor-row manager-row">
+          <input value="${m.email || ''}" class="manager-edit-email">
+          <button onclick="this.parentElement.remove()" style="background-color:#d93025;">X</button>
+      </div>`;
+  });
+  document.getElementById('support-recipient-manager-modal').style.display = 'block';
+}
+
+function addSupportPocToList() {
+    const email = document.getElementById('support-new-poc-email').value.trim();
+    const workflow = document.getElementById('support-new-poc-workflow').value.trim();
+    const vertical = document.getElementById('support-new-poc-vertical').value.trim();
+    if (email && workflow) {
+        const pocEditor = document.getElementById('support-poc-list-editor');
+        const newRowHTML = `<div class="recipient-editor-row">
+            <input value="${email}" class="poc-edit-email">
+            <input value="${workflow}" class="poc-edit-workflow">
+            <input value="${vertical}" class="poc-edit-vertical">
+            <button onclick="this.parentElement.remove()" style="background-color:#d93025;">X</button>
+        </div>`;
+        pocEditor.insertAdjacentHTML('beforeend', newRowHTML);
+
+        document.getElementById('support-new-poc-email').value = '';
+        document.getElementById('support-new-poc-workflow').value = '';
+        document.getElementById('support-new-poc-vertical').value = '';
+    }
+}
+
+function addSupportManagerToList() { 
+  const email = document.getElementById('support-new-manager-email').value.trim(); 
+  if(email){
+      const managerEditor = document.getElementById('support-manager-list-editor');
+      const newRowHTML = `<div class="recipient-editor-row manager-row">
+          <input value="${email}" class="manager-edit-email">
+          <button onclick="this.parentElement.remove()" style="background-color:#d93025;">X</button>
+      </div>`;
+      managerEditor.insertAdjacentHTML('beforeend', newRowHTML);
+      document.getElementById('support-new-manager-email').value = ''; 
+  }
+}
+
+function saveSupportRecipients() {
+  const pocs = Array.from(document.querySelectorAll('#support-poc-list-editor .recipient-editor-row:not([style*="font-weight:bold"])')).map(row => {
+      const inputs = row.querySelectorAll('input');
+      return {
+          email: inputs[0].value,
+          workflow: inputs[1].value,
+          vertical: inputs[2].value
+      };
+  }).filter(p => p.email && p.workflow);
+  const managers = Array.from(document.querySelectorAll('#support-manager-list-editor .recipient-editor-row:not([style*="font-weight:bold"])')).map(row => ({ 
+      email: row.querySelector('input').value 
+  })).filter(m => m.email);
+  
+  showStatus('Saving...', false);
+  google.script.run.withSuccessHandler(() => {
+      google.script.run.withSuccessHandler(onRecipientsSaved).saveManagersToSheet(managers);
+  }).savePocsToSheet(pocs);
+}
+
+function onRecipientsSaved() {
+  google.script.run.withSuccessHandler(data => {
+      SUPPORT_ALL_POCS = data.pocs || [];
+      SUPPORT_ALL_MANAGERS = data.managers || [];
+      closeModal('support-recipient-manager-modal');
+      showStatus('Recipients saved successfully!', false);
+  }).getSupportInitialData();
+}
+
+// Management functions
+function openPemManager() {
+  loadSupportPemList();
+}
+
+function openRecipientManager() {
+  loadSupportPocList();
+}
+
+// MMI Clarification Sheet Configuration Management
+function toggleMMIConfigButton() {
+  const workflow = document.getElementById('support-workflow-select')?.value;
+  const button = document.getElementById('manage-row-links-btn');
+  
+  if (button) {
+    button.style.display = (workflow === 'MMI') ? 'inline-block' : 'none';
+  }
+  
+  // Update Ops Leads context
+  updateSupportOpsLeadsContext();
+}
+
+function updateSupportOpsLeadsContext() {
+  const workflow = document.getElementById('support-workflow-select')?.value;
+  const vertical = document.getElementById('support-vertical-select')?.value;
+  const contextSpan = document.getElementById('support-opsleads-context');
+  
+  if (!contextSpan) return;
+  
+  if (workflow && vertical) {
+    contextSpan.textContent = `(${workflow} - ${vertical})`;
+  } else if (workflow) {
+    contextSpan.textContent = `(${workflow})`;
+  } else {
+    contextSpan.textContent = '';
+  }
+}
+
+function openRowLinkManager() {
+  // Load current configuration
+  google.script.run
+    .withSuccessHandler(function(result) {
+      const statusDiv = document.getElementById('support-row-link-status-text');
+      const inputField = document.getElementById('support-row-link-base-url-input');
+      
+      if (result.isCustom) {
+        statusDiv.innerHTML = `<span style="color: #34a853;">✓ Custom URL configured</span><br><span style="font-size: 11px; color: #5f6368; font-family: monospace; word-break: break-all;">${result.url}</span>`;
+        inputField.value = result.url;
+      } else {
+        statusDiv.innerHTML = `<span style="color: #5f6368;">Using default spreadsheet URL</span><br><span style="font-size: 11px; color: #5f6368; font-family: monospace; word-break: break-all;">${result.url}</span>`;
+        inputField.value = '';
+        inputField.placeholder = result.url;
+      }
+      
+      document.getElementById('support-row-link-config-modal').style.display = 'block';
+    })
+    .withFailureHandler(function(error) {
+      showNotification('Error loading configuration: ' + error.message, 'error');
+    })
+    .getSupportRowLinkBaseUrl();
+}
+
+function saveSupportRowLinkBaseUrl() {
+  const newUrl = document.getElementById('support-row-link-base-url-input').value.trim();
+  
+  if (!newUrl) {
+    showNotification('Please enter a URL', 'error');
+    return;
+  }
+  
+  // Show loading state
+  const statusDiv = document.getElementById('support-row-link-status-text');
+  statusDiv.innerHTML = '<span style="color: #5f6368;">⏳ Saving...</span>';
+  
+  google.script.run
+    .withSuccessHandler(function(result) {
+      if (result.status === 'success') {
+        // Update the status display with the new URL
+        statusDiv.innerHTML = `<span style="color: #34a853; font-weight: 500;">✓ Custom URL saved successfully!</span><br><span style="font-size: 11px; color: #5f6368; font-family: monospace; word-break: break-all; margin-top: 5px; display: block;">${result.url}</span>`;
+        
+        // Clear the input field
+        document.getElementById('support-row-link-base-url-input').value = '';
+        
+        // Show success notification
+        showNotification('✓ Base URL updated successfully! All future row links will use this URL.', 'success');
+        
+        // Close modal after showing success for 2 seconds
+        setTimeout(() => {
+          closeModal('support-row-link-config-modal');
+        }, 2000);
+      } else {
+        statusDiv.innerHTML = `<span style="color: #d93025;">✗ Error saving URL</span>`;
+        showNotification('Error: ' + result.message, 'error');
+      }
+    })
+    .withFailureHandler(function(error) {
+      statusDiv.innerHTML = `<span style="color: #d93025;">✗ Error saving URL</span>`;
+      showNotification('Error saving URL: ' + error.message, 'error');
+    })
+    .setSupportRowLinkBaseUrl(newUrl);
+}
+
+function resetSupportRowLinkBaseUrl() {
+  if (!confirm('Are you sure you want to reset to the default URL? This will affect all future emails.')) {
+    return;
+  }
+  
+  google.script.run
+    .withSuccessHandler(function(result) {
+      if (result.status === 'success') {
+        showNotification('Reset to default URL successfully', 'success');
+        // Reload the modal to show updated status
+        closeModal('support-row-link-config-modal');
+        setTimeout(() => openRowLinkManager(), 300);
+      } else {
+        showNotification('Error: ' + result.message, 'error');
+      }
+    })
+    .withFailureHandler(function(error) {
+      showNotification('Error resetting URL: ' + error.message, 'error');
+    })
+    .resetSupportRowLinkBaseUrl();
+}
+
+// ==================== CLARIFICATION SHEET URL MANAGEMENT ====================
+
+function openClarificationSheetManager() {
+  // Load current configuration
+  google.script.run
+    .withSuccessHandler(function(result) {
+      const statusDiv = document.getElementById('clarification-sheet-status-text');
+      const inputField = document.getElementById('clarification-sheet-url-input');
+      
+      if (result.isCustom) {
+        statusDiv.innerHTML = `<span style="color: #34a853;">✓ Custom URL configured</span><br><span style="font-size: 11px; color: #5f6368; font-family: monospace; word-break: break-all;">${result.url}</span>`;
+        inputField.value = result.url;
+      } else {
+        statusDiv.innerHTML = `<span style="color: #5f6368;">Using default clarification sheet</span><br><span style="font-size: 11px; color: #5f6368; font-family: monospace; word-break: break-all;">${result.url}</span>`;
+        inputField.value = '';
+        inputField.placeholder = result.url;
+      }
+      
+      document.getElementById('clarification-sheet-config-modal').style.display = 'block';
+    })
+    .withFailureHandler(function(error) {
+      showNotification('Error loading configuration: ' + error.message, 'error');
+    })
+    .getClarificationSheetUrl();
+}
+
+function saveClarificationSheetUrl() {
+  const newUrl = document.getElementById('clarification-sheet-url-input').value.trim();
+  
+  if (!newUrl) {
+    showNotification('Please enter a URL', 'error');
+    return;
+  }
+  
+  // Show loading state
+  const statusDiv = document.getElementById('clarification-sheet-status-text');
+  statusDiv.innerHTML = '<span style="color: #5f6368;">⏳ Saving...</span>';
+  
+  google.script.run
+    .withSuccessHandler(function(result) {
+      if (result.status === 'success') {
+        statusDiv.innerHTML = `<span style="color: #34a853; font-weight: 500;">✓ Clarification sheet URL saved successfully!</span><br><span style="font-size: 11px; color: #5f6368; font-family: monospace; word-break: break-all; margin-top: 5px; display: block;">${result.url}</span>`;
+        
+        document.getElementById('clarification-sheet-url-input').value = '';
+        
+        showNotification('✓ Clarification sheet URL updated successfully!', 'success');
+        
+        setTimeout(() => {
+          closeModal('clarification-sheet-config-modal');
+        }, 2000);
+      } else {
+        statusDiv.innerHTML = `<span style="color: #d93025;">✗ Error saving URL</span>`;
+        showNotification('Error: ' + result.message, 'error');
+      }
+    })
+    .withFailureHandler(function(error) {
+      statusDiv.innerHTML = `<span style="color: #d93025;">✗ Error saving URL</span>`;
+      showNotification('Error saving URL: ' + error.message, 'error');
+    })
+    .setClarificationSheetUrl(newUrl);
+}
+
+function resetClarificationSheetUrl() {
+  google.script.run
+    .withSuccessHandler(function(result) {
+      if (result.status === 'success') {
+        showNotification('Reset to default clarification sheet URL successfully', 'success');
+        closeModal('clarification-sheet-config-modal');
+        setTimeout(() => openClarificationSheetManager(), 300);
+      } else {
+        showNotification('Error: ' + result.message, 'error');
+      }
+    })
+    .withFailureHandler(function(error) {
+      showNotification('Error resetting URL: ' + error.message, 'error');
+    })
+    .resetClarificationSheetUrl();
+}
+
+
+// Initialize
+// Initialize immediately when script loads
+console.log(' App starting...');
+
+// Check if Google Apps Script API is available
+if (typeof google === 'undefined' || !google.script || !google.script.run) {
+  console.error(' Google Apps Script API not available!');
+  showStatus('Google Apps Script API not available. This app must run within Google Apps Script environment.', true);
+} else {
+}
+
+// Show landing page first
+getUserGreeting();
+
+// Initialize data with better error handling
+showStatus('Loading initial data...', false);
+
+// Initialize admin data
+console.log(' Loading admin data...');
+google.script.run
+  .withSuccessHandler((data) => {
+    initializeAdminApp(data);
+  })
+  .withFailureHandler((error) => {
+    console.error(' Admin data error:', error.message);
+    showStatus('Error loading admin configuration: ' + error.message, true);
+    initializeAdminApp({ workflows: [], templates: [] });
+  })
+  .getInitialData();
+
+// Initialize support data
+console.log(' Loading support data...');
+google.script.run
+  .withSuccessHandler((data) => {
+    initializeSupportApp(data);
+  })
+  .withFailureHandler((error) => {
+    console.error(' Support data error:', error.message);
+    showStatus('Error loading support data: ' + error.message, true);
+    initializeSupportApp({ pems: [], pocs: [], managers: [] });
+  })
+  .getSupportInitialData();
+
+// Also add DOMContentLoaded as backup
+document.addEventListener('DOMContentLoaded', () => {
+  // Only run if not already initialized
+  if (!APP_DATA || APP_DATA.workflows === undefined) {
+    getUserGreeting();
+    showStatus('Loading data...', false);
+    google.script.run.withSuccessHandler(initializeAdminApp).withFailureHandler((e) => console.error('Backup admin error:', e)).getInitialData();
+    google.script.run.withSuccessHandler(initializeSupportApp).withFailureHandler((e) => console.error('Backup support error:', e)).getSupportInitialData();
+  }
+});
+
+// Verification function to check initialization status
+setTimeout(() => {
+  if ((!APP_DATA || !APP_DATA.workflows) && SUPPORT_ALL_PEMS.length === 0 && SUPPORT_ALL_POCS.length === 0) {
+    console.error('Initialization failed');
+    showStatus('Initialization failed. Try using the diagnostic buttons or refresh the page.', true);
+  } else {
+    showStatus('Application loaded successfully', false);
+  }
+}, 3000);
+
+// Manual initialization function
+function manualInitialize() {
+  getUserGreeting();
+  showStatus('Reloading...', false);
+
+  google.script.run
+    .withSuccessHandler((data) => {
+      initializeAdminApp(data);
+      showStatus('Admin reloaded', false);
+    })
+    .withFailureHandler((error) => {
+      showStatus('Admin reload failed: ' + error.message, true);
+    })
+    .getInitialData();
+
+  google.script.run
+    .withSuccessHandler((data) => {
+      initializeSupportApp(data);
+      showStatus('Support reloaded', false);
+    })
+    .withFailureHandler((error) => {
+      showStatus('Support reload failed: ' + error.message, true);
+    })
+    .getSupportInitialData();
+}
+
+// Test function to verify backend connectivity
+function testBackendConnection() {
+  google.script.run
+    .withSuccessHandler((result) => {
+      showStatus('Backend check completed', false);
+    })
+    .withFailureHandler((error) => {
+      showStatus('Backend check failed: ' + error.message, true);
+    })
+    .diagnoseSheets();
+}
+
+// Expose test function globally
+window.testBackendConnection = testBackendConnection;
+window.diagnoseAdminApp = diagnoseAdminApp;
+
+// Function to populate sample data
+function populateSampleData() {
+  showStatus('Adding sample data...', false);
+
+  google.script.run
+    .withSuccessHandler((result) => {
+      if (result.status === 'success') {
+        showStatus('Sample data added! Reload to see changes.', false);
+      } else {
+        showStatus('Error: ' + result.message, true);
+      }
+    })
+    .withFailureHandler((error) => {
+      showStatus('Sample data failed: ' + error.message, true);
+    })
+    .populateSampleData();
+}
+
+// Function to diagnose admin app issues
+function diagnoseAdminApp() {
+  console.log(' Diagnosing admin app...');
+  console.log('APP_DATA:', APP_DATA);
+  console.log('SELECTED_EVENT:', SELECTED_EVENT);
+  
+  if (!APP_DATA || !APP_DATA.workflows) {
+    console.error(' APP_DATA not loaded');
+    showNotification('Admin data not loaded. Try refreshing the page.', 'error');
+    return;
+  }
+  
+  if (APP_DATA.workflows.length === 0) {
+    console.warn(' No workflows found');
+    showNotification('No workflows configured. Check your spreadsheet.', 'warning');
+    return;
+  }
+  
+  showNotification('Admin app is working correctly', 'success');
+}
+
+// Copy console logs to clipboard
+let consoleLogs = [];
+const originalLog = console.log;
+const originalError = console.error;
+
+console.log = function(...args) {
+  originalLog.apply(console, args);
+  const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+  consoleLogs.push(message);
+};
+
+console.error = function(...args) {
+  originalError.apply(console, args);
+  const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+  consoleLogs.push('[ERROR] ' + message);
+};
+
+function copyLogsToClipboard() {
+  const logsText = consoleLogs.join('\n');
+  navigator.clipboard.writeText(logsText).then(() => {
+    alert(' Console logs copied to clipboard! (' + consoleLogs.length + ' lines)');
+  }).catch(() => {
+    // Fallback for older browsers
+    const textarea = document.createElement('textarea');
+    textarea.value = logsText;
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    alert(' Logs copied (fallback method)');
+  });
+}
+
+// Expose globally
+window.copyLogsToClipboard = copyLogsToClipboard;
+
+// Fallback initialization check
+setTimeout(() => {
+  const landingPage = document.getElementById('landing-page');
+  const mainApp = document.getElementById('main-app');
+
+  if (landingPage && landingPage.style.display !== 'none' && mainApp && mainApp.style.display === 'none') {
+    showStatus('Loading taking longer than expected...', true);
+  }
+
+  const supportMeetingsList = document.getElementById('support-meetings-list');
+  if (supportMeetingsList && supportMeetingsList.innerHTML.includes('Loading initial data')) {
+    supportMeetingsList.innerHTML = '<p>Try clicking "Manual Init" if loading takes too long.</p>';
+  }
+}, 5000);
+
+// ===== RICH TEXT EDITOR FUNCTIONS =====
+
+function initializeAdminRichTextEditors(workflowType) {
+  // Initialize ALL contenteditable rich text editors in the Admin section
+  const allEditors = document.querySelectorAll('#admin-section .rich-text-editor[contenteditable="true"]');
+  
+  allEditors.forEach(editor => {
+    // Skip if already initialized
+    if (editor.hasAttribute('data-paste-initialized')) return;
+    
+    setupAdminEditorBehavior(editor);
+    editor.setAttribute('data-paste-initialized', 'true');
+  });
+  
+  // Also initialize workflow-specific editors that may be added dynamically
+  if (workflowType === 'SA') {
+    setTimeout(() => {
+      const fteAnswerEditor = document.getElementById('admin-fte-answer-editor');
+      const addMsgTextEditor = document.getElementById('admin-add-msg-text');
+      
+      if (fteAnswerEditor && !fteAnswerEditor.hasAttribute('data-paste-initialized')) {
+        setupAdminEditorBehavior(fteAnswerEditor);
+        fteAnswerEditor.setAttribute('data-paste-initialized', 'true');
+      }
+      if (addMsgTextEditor && !addMsgTextEditor.hasAttribute('data-paste-initialized')) {
+        setupAdminEditorBehavior(addMsgTextEditor);
+        addMsgTextEditor.setAttribute('data-paste-initialized', 'true');
+      }
+    }, 100);
+  } else if (workflowType === 'MMI') {
+    setTimeout(() => {
+      const discussedEditor = document.getElementById('admin-mmi-discussed-editor');
+      
+      if (discussedEditor && !discussedEditor.hasAttribute('data-paste-initialized')) {
+        setupAdminEditorBehavior(discussedEditor);
+        discussedEditor.setAttribute('data-paste-initialized', 'true');
+      }
+      
+      // Initialize all Golden Set rationale editors
+      const rationaleEditors = document.querySelectorAll('.golden-set-rationale');
+      rationaleEditors.forEach(editor => {
+        if (editor && !editor.hasAttribute('data-paste-initialized')) {
+          setupAdminEditorBehavior(editor);
+          editor.setAttribute('data-paste-initialized', 'true');
+        }
+      });
+    }, 100);
+  }
+}
+
+function setupAdminEditorBehavior(editor) {
+  if (!editor) return;
+  
+  // Handle paste to preserve formatting (links, colors, bold, italic, etc.)
+  editor.addEventListener('paste', (e) => {
+    e.preventDefault();
+    
+    // Try to get HTML first (preserves formatting)
+    let html = e.clipboardData.getData('text/html');
+    const text = e.clipboardData.getData('text/plain');
+    
+    if (html) {
+      // Clean and preserve important formatting
+      html = cleanPastedHtml(html);
+      document.execCommand('insertHTML', false, html);
+    } else if (text) {
+      // Convert line breaks to <br> for plain text
+      const formatted = text.replace(/\n/g, '<br>');
+      document.execCommand('insertHTML', false, formatted);
+    }
+  });
+  
+  // Add placeholder styling
+  if (!editor.innerHTML.trim() || editor.innerHTML === '<br>') {
+    editor.classList.add('empty');
+  }
+  
+  editor.addEventListener('focus', () => {
+    editor.classList.remove('empty');
+  });
+  
+  editor.addEventListener('blur', () => {
+    if (!editor.innerHTML.trim() || editor.innerHTML === '<br>') {
+      editor.classList.add('empty');
+    }
+  });
+}
+
+// Function to clean pasted HTML while preserving formatting
+function cleanPastedHtml(html) {
+  // Create a temporary div to parse the HTML
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  
+  // Remove unwanted elements (scripts, styles, meta, etc.)
+  const unwantedTags = ['script', 'style', 'meta', 'link', 'noscript', 'iframe', 'object', 'embed'];
+  unwantedTags.forEach(tag => {
+    const elements = temp.querySelectorAll(tag);
+    elements.forEach(el => el.remove());
+  });
+  
+  // Remove unwanted attributes but keep important ones
+  const allowedAttributes = ['href', 'src', 'alt', 'title', 'target', 'style', 'class', 'id', 'colspan', 'rowspan'];
+  const allElements = temp.querySelectorAll('*');
+  
+  allElements.forEach(el => {
+    // Get all attributes
+    const attributes = Array.from(el.attributes);
+    
+    attributes.forEach(attr => {
+      // Remove data attributes and event handlers except allowed ones
+      if (!allowedAttributes.includes(attr.name) && 
+          !attr.name.startsWith('data-') && 
+          !attr.name.startsWith('on')) {
+        // Keep it
+      } else if (attr.name.startsWith('on')) {
+        // Remove event handlers
+        el.removeAttribute(attr.name);
+      }
+    });
+    
+    // Preserve inline styles for colors, backgrounds, fonts, etc.
+    if (el.style && el.style.cssText) {
+      // Keep the style attribute as is
+      const importantStyles = [
+        'color', 'background-color', 'background', 'font-weight', 'font-style', 
+        'text-decoration', 'font-size', 'font-family', 'text-align'
+      ];
+      
+      let newStyle = '';
+      importantStyles.forEach(prop => {
+        const value = el.style.getPropertyValue(prop);
+        if (value) {
+          newStyle += `${prop}: ${value}; `;
+        }
+      });
+      
+      if (newStyle) {
+        el.setAttribute('style', newStyle.trim());
+      } else {
+        el.removeAttribute('style');
+      }
+    }
+  });
+  
+  // Convert common Office/Google Docs elements
+  const spans = temp.querySelectorAll('span');
+  spans.forEach(span => {
+    // If span has no meaningful styling or content, unwrap it
+    if (!span.style.cssText && !span.className && span.children.length === 0) {
+      const parent = span.parentNode;
+      while (span.firstChild) {
+        parent.insertBefore(span.firstChild, span);
+      }
+      parent.removeChild(span);
+    }
+  });
+  
+  return temp.innerHTML;
+}
+
+function execCommand(command, value = null) {
+  document.execCommand(command, false, value);
+}
+
+// Variables to store the current selection range
+let currentEditorSelection = null;
+
+function insertLink() {
+  // Save the current selection
+  currentEditorSelection = window.getSelection().getRangeAt(0);
+  
+  // Get selected text if any
+  const selectedText = window.getSelection().toString();
+  document.getElementById('link-text-input').value = selectedText;
+  document.getElementById('link-url-input').value = '';
+  
+  // Show modal
+  document.getElementById('link-insert-modal').style.display = 'block';
+  document.getElementById('link-url-input').focus();
+}
+
+function confirmInsertLink() {
+  const linkText = document.getElementById('link-text-input').value.trim();
+  const linkUrl = document.getElementById('link-url-input').value.trim();
+  
+  if (!linkUrl || linkUrl === 'https://') {
+    alert('Please enter a valid URL');
+    return;
+  }
+  
+  // Restore the selection
+  if (currentEditorSelection) {
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(currentEditorSelection);
+  }
+  
+  // If there's link text, insert it with the link
+  if (linkText) {
+    const linkHtml = `<a href="${linkUrl}" target="_blank">${linkText}</a>`;
+    document.execCommand('insertHTML', false, linkHtml);
+  } else {
+    // Just create a link from selected text
+    document.execCommand('createLink', false, linkUrl);
+  }
+  
+  closeModal('link-insert-modal');
+  currentEditorSelection = null;
+}
+
+function insertImage() {
+  // Save the current selection
+  currentEditorSelection = window.getSelection().getRangeAt(0);
+  
+  // Clear inputs
+  document.getElementById('image-url-input').value = '';
+  document.getElementById('image-alt-input').value = '';
+  
+  // Show modal
+  document.getElementById('image-insert-modal').style.display = 'block';
+  document.getElementById('image-url-input').focus();
+}
+
+function confirmInsertImage() {
+  const imageUrl = document.getElementById('image-url-input').value.trim();
+  const altText = document.getElementById('image-alt-input').value.trim() || 'Image';
+  
+  if (!imageUrl || imageUrl === 'https://') {
+    alert('Please enter a valid image URL');
+    return;
+  }
+  
+  // Restore the selection
+  if (currentEditorSelection) {
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(currentEditorSelection);
+  }
+  
+  // Insert image
+  const imgHtml = `<img src="${imageUrl}" alt="${altText}" style="max-width: 100%; height: auto; border-radius: 4px; margin: 10px 0;">`;
+  document.execCommand('insertHTML', false, imgHtml);
+  
+  closeModal('image-insert-modal');
+  currentEditorSelection = null;
+}
+
+function changeFontSize(size) {
+  document.execCommand('fontSize', false, size);
+}
+
+function changeTextColor(color) {
+  document.execCommand('foreColor', false, color);
+}
+
+function changeBackgroundColor(color) {
+  document.execCommand('hiliteColor', false, color);
+}
+
+function createRichTextEditor(textareaId, placeholder = '') {
+  const textarea = document.getElementById(textareaId);
+  if (!textarea) return;
+  
+  // Check if already initialized (prevent duplicates)
+  if (textarea.getAttribute('data-rich-editor-initialized') === 'true') {
+    console.log(`Rich text editor for ${textareaId} already initialized, skipping...`);
+    return;
+  }
+  
+  const parent = textarea.parentElement;
+  
+  // Create enhanced toolbar
+  const toolbar = document.createElement('div');
+  toolbar.className = 'editor-toolbar';
+  toolbar.innerHTML = `
+    <div class="toolbar-group">
+      <button type="button" onclick="execCommand('bold')" title="Bold (Ctrl+B)" class="toolbar-btn"><b>B</b></button>
+      <button type="button" onclick="execCommand('italic')" title="Italic (Ctrl+I)" class="toolbar-btn"><i>I</i></button>
+      <button type="button" onclick="execCommand('underline')" title="Underline (Ctrl+U)" class="toolbar-btn"><u>U</u></button>
+      <button type="button" onclick="execCommand('strikeThrough')" title="Strikethrough" class="toolbar-btn"><s>S</s></button>
+    </div>
+    <span class="toolbar-separator"></span>
+    <div class="toolbar-group">
+      <select onchange="changeFontSize(this.value); this.selectedIndex=0;" class="toolbar-select" title="Font Size">
+        <option value="">Size</option>
+        <option value="1">Small</option>
+        <option value="3">Normal</option>
+        <option value="5">Large</option>
+        <option value="7">Huge</option>
+      </select>
+      <input type="color" onchange="changeTextColor(this.value)" title="Text Color" class="toolbar-color-picker" value="#000000">
+      <input type="color" onchange="changeBackgroundColor(this.value)" title="Background Color" class="toolbar-color-picker" value="#ffff00">
+    </div>
+    <span class="toolbar-separator"></span>
+    <div class="toolbar-group">
+      <button type="button" onclick="execCommand('justifyLeft')" title="Align Left" class="toolbar-btn">⬅</button>
+      <button type="button" onclick="execCommand('justifyCenter')" title="Align Center" class="toolbar-btn">↔</button>
+      <button type="button" onclick="execCommand('justifyRight')" title="Align Right" class="toolbar-btn">➡</button>
+    </div>
+    <span class="toolbar-separator"></span>
+    <div class="toolbar-group">
+      <button type="button" onclick="execCommand('insertUnorderedList')" title="Bullet List" class="toolbar-btn">• List</button>
+      <button type="button" onclick="execCommand('insertOrderedList')" title="Numbered List" class="toolbar-btn">1. List</button>
+      <button type="button" onclick="execCommand('indent')" title="Indent" class="toolbar-btn">→</button>
+      <button type="button" onclick="execCommand('outdent')" title="Outdent" class="toolbar-btn">←</button>
+    </div>
+    <span class="toolbar-separator"></span>
+    <div class="toolbar-group">
+      <button type="button" onclick="execCommand('formatBlock', 'h3')" title="Heading" class="toolbar-btn">H3</button>
+      <button type="button" onclick="execCommand('formatBlock', 'p')" title="Paragraph" class="toolbar-btn">P</button>
+    </div>
+    <span class="toolbar-separator"></span>
+    <div class="toolbar-group">
+      <button type="button" onclick="insertLink()" title="Insert Link" class="toolbar-btn">🔗 Link</button>
+      <button type="button" onclick="insertImage()" title="Insert Image" class="toolbar-btn">🖼️ Image</button>
+    </div>
+    <span class="toolbar-separator"></span>
+    <div class="toolbar-group">
+      <button type="button" onclick="execCommand('removeFormat')" title="Clear Formatting" class="toolbar-btn">✕ Clear</button>
+    </div>
+  `;
+  
+  // Create contenteditable div
+  const editor = document.createElement('div');
+  editor.className = 'rich-text-editor';
+  editor.contentEditable = true;
+  editor.id = textareaId + '-editor';
+  editor.setAttribute('data-placeholder', placeholder);
+  
+  // Copy existing content from textarea
+  const existingContent = textarea.value;
+  if (existingContent) {
+    // Convert plain text to HTML with line breaks
+    editor.innerHTML = existingContent.replace(/\n/g, '<br>');
+  }
+  
+  // Hide original textarea but keep it for form submission
+  textarea.style.display = 'none';
+  textarea.setAttribute('data-rich-editor-initialized', 'true');
+  
+  // Insert toolbar and editor
+  parent.insertBefore(toolbar, textarea);
+  parent.insertBefore(editor, textarea);
+  
+  // Sync editor content to textarea on input
+  editor.addEventListener('input', () => {
+    textarea.value = editor.innerHTML;
+  });
+  
+  // Handle paste to preserve formatting (links, colors, bold, italic, etc.)
+  editor.addEventListener('paste', (e) => {
+    e.preventDefault();
+    
+    // Try to get HTML first (preserves formatting)
+    let html = e.clipboardData.getData('text/html');
+    const text = e.clipboardData.getData('text/plain');
+    
+    if (html) {
+      // Clean and preserve important formatting
+      html = cleanPastedHtml(html);
+      document.execCommand('insertHTML', false, html);
+    } else if (text) {
+      // Convert line breaks to <br> for plain text
+      const formatted = text.replace(/\n/g, '<br>');
+      document.execCommand('insertHTML', false, formatted);
+    }
+    
+    textarea.value = editor.innerHTML;
+  });
+  
+  // Add placeholder styling
+  if (!existingContent) {
+    editor.classList.add('empty');
+  }
+  
+  editor.addEventListener('focus', () => {
+    editor.classList.remove('empty');
+  });
+  
+  editor.addEventListener('blur', () => {
+    if (!editor.innerHTML.trim() || editor.innerHTML === '<br>') {
+      editor.classList.add('empty');
+    }
+  });
+}
+
+function getEditorContent(textareaId) {
+  const editor = document.getElementById(textareaId + '-editor');
+  if (editor) {
+    return editor.innerHTML;
+  }
+  // Fallback to textarea
+  const textarea = document.getElementById(textareaId);
+  return textarea ? textarea.value : '';
+}
+
+function setEditorContent(textareaId, content) {
+  const editor = document.getElementById(textareaId + '-editor');
+  if (editor) {
+    editor.innerHTML = content;
+    // Sync to hidden textarea
+    const textarea = document.getElementById(textareaId);
+    if (textarea) {
+      textarea.value = content;
+    }
+  } else {
+    // Fallback to textarea
+    const textarea = document.getElementById(textareaId);
+    if (textarea) {
+      textarea.value = content;
+    }
+  }
+}
+
+// ==================== EMAIL HISTORY FUNCTIONS ====================
+
+function openAdminHistoryModal() {
+  const modal = document.getElementById('admin-history-modal');
+  if (modal) {
+    modal.style.display = 'block';
+    loadAdminHistory();
+  }
+}
+
+function openSupportHistoryModal() {
+  const modal = document.getElementById('support-history-modal');
+  if (modal) {
+    modal.style.display = 'block';
+    loadSupportHistory();
+  }
+}
+
+function loadAdminHistory() {
+  const listContainer = document.getElementById('admin-history-list');
+  listContainer.innerHTML = '<p>Loading history...</p>';
+  
+  google.script.run.withSuccessHandler(function(history) {
+    if (!history || history.length === 0) {
+      listContainer.innerHTML = '<p style="color: #666;">No emails found in history.</p>';
+      return;
+    }
+    
+    let html = '<div style="display: flex; flex-direction: column; gap: 10px;">';
+    
+    history.forEach(function(email, index) {
+      html += '<div onclick="viewAdminHistoryEmail(' + email.id + ')" style="padding: 12px; border: 1px solid #e0e0e0; border-radius: 4px; cursor: pointer; background-color: #f9f9f9; transition: all 0.2s;">';
+      html += '<div style="font-weight: 600; color: #202124; margin-bottom: 4px;">' + (email.subject || 'N/A') + '</div>';
+      html += '<div style="font-size: 12px; color: #5f6368; margin-bottom: 4px;">' + (email.workflow || 'N/A') + '</div>';
+      html += '<div style="font-size: 11px; color: #9aa0a6;">' + (email.timestamp || 'N/A') + '</div>';
+      html += '</div>';
+    });
+    
+    html += '</div>';
+    listContainer.innerHTML = html;
+  }).withFailureHandler(function(error) {
+    listContainer.innerHTML = '<p style="color: red;">Error loading history: ' + error + '</p>';
+  }).getAdminEmailHistory();
+}
+
+function loadSupportHistory() {
+  const listContainer = document.getElementById('support-history-list');
+  listContainer.innerHTML = '<p>Loading history...</p>';
+  
+  google.script.run.withSuccessHandler(function(history) {
+    if (!history || history.length === 0) {
+      listContainer.innerHTML = '<p style="color: #666;">No emails found in history.</p>';
+      return;
+    }
+    
+    let html = '<div style="display: flex; flex-direction: column; gap: 10px;">';
+    
+    history.forEach(function(email, index) {
+      html += '<div onclick="viewSupportHistoryEmail(' + email.id + ')" style="padding: 12px; border: 1px solid #e0e0e0; border-radius: 4px; cursor: pointer; background-color: #f9f9f9; transition: all 0.2s;">';
+      html += '<div style="font-weight: 600; color: #202124; margin-bottom: 4px;">' + (email.subject || 'N/A') + '</div>';
+      html += '<div style="font-size: 12px; color: #5f6368; margin-bottom: 4px;">' + (email.workflow || 'N/A') + '</div>';
+      html += '<div style="font-size: 11px; color: #9aa0a6;">' + (email.timestamp || 'N/A') + '</div>';
+      html += '</div>';
+    });
+    
+    html += '</div>';
+    listContainer.innerHTML = html;
+  }).withFailureHandler(function(error) {
+    listContainer.innerHTML = '<p style="color: red;">Error loading history: ' + error + '</p>';
+  }).getSentHistory();
+}
+
+function viewAdminHistoryEmail(rowId) {
+  const previewSection = document.getElementById('admin-history-preview-section');
+  const noSelection = document.getElementById('admin-history-no-selection');
+  const previewDiv = document.getElementById('admin-history-email-preview');
+  
+  console.log('Loading admin email from row: ' + rowId);
+  
+  google.script.run.withSuccessHandler(function(htmlBody) {
+    console.log('Success - HTML body length: ' + (htmlBody ? htmlBody.length : 0));
+    if (htmlBody && htmlBody.length > 0) {
+      console.log('Setting preview content');
+      previewDiv.innerHTML = htmlBody;
+      previewSection.style.display = 'block';
+      noSelection.style.display = 'none';
+    } else {
+      console.log('Empty HTML body received');
+      previewDiv.innerHTML = '<p style="color: orange;">No email content available</p>';
+    }
+  }).withFailureHandler(function(error) {
+    console.log('Error loading email: ' + error);
+    previewDiv.innerHTML = '<p style="color: red;"><strong>Error:</strong> ' + error + '</p>';
+    previewSection.style.display = 'block';
+    noSelection.style.display = 'none';
+  }).getEmailHtmlById(rowId, 'Meeting record');
+}
+
+function viewSupportHistoryEmail(rowId) {
+  const previewSection = document.getElementById('support-history-preview-section');
+  const noSelection = document.getElementById('support-history-no-selection');
+  const previewDiv = document.getElementById('support-history-email-preview');
+  
+  console.log('Loading support email from row: ' + rowId);
+  
+  google.script.run.withSuccessHandler(function(htmlBody) {
+    console.log('Success - HTML body length: ' + (htmlBody ? htmlBody.length : 0));
+    if (htmlBody && htmlBody.length > 0) {
+      console.log('Setting preview content');
+      previewDiv.innerHTML = htmlBody;
+      previewSection.style.display = 'block';
+      noSelection.style.display = 'none';
+    } else {
+      console.log('Empty HTML body received');
+      previewDiv.innerHTML = '<p style="color: orange;">No email content available</p>';
+    }
+  }).withFailureHandler(function(error) {
+    console.log('Error loading email: ' + error);
+    previewDiv.innerHTML = '<p style="color: red;"><strong>Error:</strong> ' + error + '</p>';
+    previewSection.style.display = 'block';
+    noSelection.style.display = 'none';
+  }).getEmailHtmlById(rowId, 'Meeting record2');
+}
+
+function refreshAdminHistory() {
+  loadAdminHistory();
+}
+
+function refreshSupportHistory() {
+  loadSupportHistory();
+}
+
+// Support History Page Functions
+function openSupportHistoryPage() {
+  showSection('support-history-page');
+  loadSupportHistoryPage();
+}
+
+function backFromSupportHistoryPage() {
+  showSection('support-section');
+}
+
+function loadSupportHistoryPage() {
+  const listContainer = document.getElementById('support-history-page-list');
+  listContainer.innerHTML = '<p>Loading history...</p>';
+  
+  console.log('Calling getSentHistory()...');
+  
+  // Set a timeout to show error if no response in 10 seconds
+  const timeoutId = setTimeout(function() {
+    console.error('getSentHistory() timeout - no response after 10 seconds');
+    listContainer.innerHTML = '<p style="color: red;">⚠️ Timeout: The server is not responding. Please try refreshing the page or check your internet connection.</p>';
+  }, 10000);
+  
+  google.script.run.withSuccessHandler(function(history) {
+    clearTimeout(timeoutId); // Cancel timeout on success
+    console.log('getSentHistory returned:', history);
+    console.log('History length:', history ? history.length : 0);
+    
+    if (!history || history.length === 0) {
+      listContainer.innerHTML = '<p style="color: #666;">No emails found in history.</p>';
+      return;
+    }
+    
+    let html = '<div style="display: flex; flex-direction: column; gap: 10px;">';
+    
+    history.forEach(function(email, index) {
+      html += '<div onclick="viewSupportHistoryPageEmail(' + email.id + ')" style="padding: 12px; border: 1px solid #e0e0e0; border-radius: 4px; cursor: pointer; background-color: #f9f9f9; transition: all 0.2s;">';
+      html += '<div style="font-weight: 600; color: #202124; margin-bottom: 4px; font-size: 14px;">' + (email.subject || 'N/A') + '</div>';
+      html += '<div style="font-size: 12px; color: #5f6368; margin-bottom: 4px;">' + (email.workflow || 'N/A') + '</div>';
+      html += '<div style="font-size: 12px; color: #999; margin-bottom: 4px;">Sent by: <strong>' + (email.ldap || 'Unknown') + '</strong></div>';
+      html += '<div style="font-size: 11px; color: #9aa0a6;">' + (email.timestamp || 'N/A') + '</div>';
+      html += '</div>';
+    });
+    
+    html += '</div>';
+    listContainer.innerHTML = html;
+    console.log('History list rendered with ' + history.length + ' emails');
+  }).withFailureHandler(function(error) {
+    clearTimeout(timeoutId); // Cancel timeout on failure
+    console.error('Error loading history:', error);
+    listContainer.innerHTML = '<p style="color: red;">Error loading history: ' + (error.message || error) + '</p>';
+  }).getSentHistory();
+}
+
+function viewSupportHistoryPageEmail(rowId) {
+  const detailsSection = document.getElementById('support-history-page-details');
+  const noSelection = document.getElementById('support-history-page-no-selection');
+  const previewDiv = document.getElementById('support-history-page-preview');
+  
+  console.log('Loading support email from row: ' + rowId);
+  
+  // First, get the email data to display metadata
+  google.script.run.withSuccessHandler(function(history) {
+    const email = history.find(e => e.id === rowId);
+    if (email) {
+      document.getElementById('history-detail-ldap').textContent = email.ldap || 'Unknown';
+      document.getElementById('history-detail-timestamp').textContent = email.timestamp || '—';
+      document.getElementById('history-detail-workflow').textContent = email.workflow || '—';
+      document.getElementById('history-detail-subject').textContent = email.subject || '—';
+      document.getElementById('history-detail-to').textContent = email.to || '—';
+      document.getElementById('history-detail-cc').textContent = email.cc || '—';
+    }
+  }).getSentHistory();
+  
+  // Then, get the HTML content
+  google.script.run.withSuccessHandler(function(htmlBody) {
+    console.log('Success - HTML body length: ' + (htmlBody ? htmlBody.length : 0));
+    if (htmlBody && htmlBody.length > 0) {
+      console.log('Setting preview content');
+      previewDiv.innerHTML = htmlBody;
+      detailsSection.style.display = 'block';
+      noSelection.style.display = 'none';
+    } else {
+      console.log('Empty HTML body received');
+      previewDiv.innerHTML = '<p style="color: orange;">No email content available</p>';
+      detailsSection.style.display = 'block';
+      noSelection.style.display = 'none';
+    }
+  }).withFailureHandler(function(error) {
+    console.log('Error loading email: ' + error);
+    previewDiv.innerHTML = '<p style="color: red;"><strong>Error:</strong> ' + error + '</p>';
+    detailsSection.style.display = 'block';
+    noSelection.style.display = 'none';
+  }).getEmailHtmlById(rowId, 'Meeting record2');
+}
+
+// Admin History Page Functions
+function openAdminHistoryPage() {
+  showSection('admin-history-page');
+  loadAdminHistoryPage();
+}
+
+function backFromAdminHistoryPage() {
+  showSection('admin-section');
+}
+
+function loadAdminHistoryPage() {
+  const listContainer = document.getElementById('admin-history-page-list');
+  listContainer.innerHTML = '<p>Loading history...</p>';
+  
+  console.log('Calling getAdminEmailHistory()...');
+  
+  // Set a timeout to show error if no response in 10 seconds
+  const timeoutId = setTimeout(function() {
+    console.error('getAdminEmailHistory() timeout - no response after 10 seconds');
+    listContainer.innerHTML = '<p style="color: red;">⚠️ Timeout: The server is not responding. Please try refreshing the page or check your internet connection.</p>';
+  }, 10000);
+  
+  google.script.run.withSuccessHandler(function(history) {
+    clearTimeout(timeoutId); // Cancel timeout on success
+    console.log('getAdminEmailHistory returned:', history);
+    console.log('History length:', history ? history.length : 0);
+    
+    if (!history || history.length === 0) {
+      listContainer.innerHTML = '<p style="color: #666;">No emails found in history.</p>';
+      return;
+    }
+    
+    let html = '<div style="display: flex; flex-direction: column; gap: 10px;">';
+    
+    history.forEach(function(email, index) {
+      html += '<div onclick="viewAdminHistoryPageEmail(' + email.id + ')" style="padding: 12px; border: 1px solid #e0e0e0; border-radius: 4px; cursor: pointer; background-color: #f9f9f9; transition: all 0.2s;">';
+      html += '<div style="font-weight: 600; color: #202124; margin-bottom: 4px; font-size: 14px;">' + (email.subject || 'N/A') + '</div>';
+      html += '<div style="font-size: 12px; color: #5f6368; margin-bottom: 4px;">' + (email.workflow || 'N/A') + '</div>';
+      html += '<div style="font-size: 12px; color: #999; margin-bottom: 4px;">Sent by: <strong>' + (email.ldap || 'Unknown') + '</strong></div>';
+      html += '<div style="font-size: 11px; color: #9aa0a6;">' + (email.timestamp || 'N/A') + '</div>';
+      html += '</div>';
+    });
+    
+    html += '</div>';
+    listContainer.innerHTML = html;
+    console.log('Admin history list rendered with ' + history.length + ' emails');
+  }).withFailureHandler(function(error) {
+    clearTimeout(timeoutId); // Cancel timeout on failure
+    console.error('Error loading admin history:', error);
+    listContainer.innerHTML = '<p style="color: red;">Error loading history: ' + (error.message || error) + '</p>';
+  }).getAdminEmailHistory();
+}
+
+function viewAdminHistoryPageEmail(rowId) {
+  const detailsSection = document.getElementById('admin-history-page-details');
+  const noSelection = document.getElementById('admin-history-page-no-selection');
+  const previewDiv = document.getElementById('admin-history-page-preview');
+  
+  console.log('Loading admin email from row: ' + rowId);
+  
+  // First, get the email data to display metadata
+  google.script.run.withSuccessHandler(function(history) {
+    const email = history.find(e => e.id === rowId);
+    if (email) {
+      document.getElementById('admin-history-detail-ldap').textContent = email.ldap || 'Unknown';
+      document.getElementById('admin-history-detail-timestamp').textContent = email.timestamp || '—';
+      document.getElementById('admin-history-detail-workflow').textContent = email.workflow || '—';
+      document.getElementById('admin-history-detail-subject').textContent = email.subject || '—';
+      document.getElementById('admin-history-detail-to').textContent = email.to || '—';
+      document.getElementById('admin-history-detail-cc').textContent = email.cc || '—';
+    }
+  }).getAdminEmailHistory();
+  
+  // Then, get the HTML content
+  google.script.run.withSuccessHandler(function(htmlBody) {
+    console.log('Success - HTML body length: ' + (htmlBody ? htmlBody.length : 0));
+    if (htmlBody && htmlBody.length > 0) {
+      console.log('Setting preview content');
+      previewDiv.innerHTML = htmlBody;
+      detailsSection.style.display = 'block';
+      noSelection.style.display = 'none';
+    } else {
+      console.log('Empty HTML body received');
+      previewDiv.innerHTML = '<p style="color: orange;">No email content available</p>';
+      detailsSection.style.display = 'block';
+      noSelection.style.display = 'none';
+    }
+  }).withFailureHandler(function(error) {
+    console.log('Error loading email: ' + error);
+    previewDiv.innerHTML = '<p style="color: red;"><strong>Error:</strong> ' + error + '</p>';
+    detailsSection.style.display = 'block';
+    noSelection.style.display = 'none';
+  }).getEmailHtmlById(rowId, 'Meeting record');
+}
+
+</script>
